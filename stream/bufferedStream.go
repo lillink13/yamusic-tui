@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,8 +24,8 @@ type BufferedStream struct {
 	readBuffer  []byte
 	readIndex   int64
 	totalSize   int64
-	buffered    bool
-	done        bool
+	buffered    atomic.Bool
+	done        atomic.Bool
 	mux         sync.Mutex
 }
 
@@ -53,9 +54,9 @@ func (h *BufferedStream) Close() error {
 	h.readBuffer = nil
 	h.stopBuffering()
 
-	if !h.done {
+	if !h.done.Load() {
 		err = h.source.Close()
-		h.done = true
+		h.done.Store(true)
 	}
 
 	return err
@@ -105,10 +106,10 @@ func (h *BufferedStream) Read(dest []byte) (n int, err error) {
 	}
 
 	if err != nil {
-		if err == io.EOF && !h.done {
+		if err == io.EOF && !h.done.Load() {
 			h.source.Close()
 			h.stopBuffering()
-			h.done = true
+			h.done.Store(true)
 		} else if err == http.ErrBodyReadAfterClose {
 			err = io.EOF
 		}
@@ -136,9 +137,9 @@ func (h *BufferedStream) Seek(offset int64, whence int) (pos int64, err error) {
 		err = errOutOfSize
 	} else {
 		if pos == h.totalSize {
-			h.done = true
+			h.done.Store(true)
 		} else {
-			h.done = false
+			h.done.Store(false)
 		}
 		h.readIndex = pos
 	}
@@ -151,14 +152,14 @@ func (h *BufferedStream) IsDone() bool {
 	if h == nil {
 		return false
 	}
-	return h.done
+	return h.done.Load()
 }
 
 func (h *BufferedStream) IsBuffered() bool {
 	if h == nil {
 		return false
 	}
-	return h.buffered
+	return h.buffered.Load()
 }
 
 func (h *BufferedStream) Progress() float64 {
@@ -179,7 +180,7 @@ func (h *BufferedStream) BufferAll() {
 	h.mux.Lock()
 	defer h.mux.Unlock()
 
-	if h.buffered {
+	if h.buffered.Load() {
 		return
 	}
 
@@ -196,6 +197,8 @@ func (h *BufferedStream) BufferAll() {
 }
 
 func (h *BufferedStream) WriteTo(dest io.Writer) (int64, error) {
+	h.mux.Lock()
+	defer h.mux.Unlock()
 	n, err := dest.Write(h.readBuffer)
 	return int64(n), err
 }
@@ -207,7 +210,7 @@ func (h *BufferedStream) Error() error {
 }
 
 func (h *BufferedStream) stopBuffering() {
-	h.buffered = true
+	h.buffered.Store(true)
 	if h.closed != nil {
 		h.bufferTimer.Stop()
 		close(h.closed)
@@ -219,7 +222,7 @@ func (h *BufferedStream) bufferFrames(size int64) {
 	for {
 		h.mux.Lock()
 
-		if h.buffered || h.totalSize <= int64(len(h.readBuffer)) {
+		if h.buffered.Load() || h.totalSize <= int64(len(h.readBuffer)) {
 			h.stopBuffering()
 			h.mux.Unlock()
 			return
