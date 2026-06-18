@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lillink13/yamusic-tui/log"
 )
 
 const (
@@ -76,8 +78,17 @@ func proccessRequest[RetT any](req *http.Request) (result RetT, invInfo InvocInf
 
 		dec := json.NewDecoder(resp.Body)
 		if derr := dec.Decode(&respBody); derr != nil && derr != io.EOF {
-			err = fmt.Errorf("failed to decode response body: %w", derr)
-			return
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(derr, &typeErr) {
+				// Yandex's unofficial schema drifts over time; a single
+				// field-type mismatch still leaves the rest of the response
+				// decoded, so keep the partial result rather than dropping the
+				// whole response. Log it so the drift stays visible.
+				log.Print(log.LVL_WARNIGN, "partial decode of %s: %s", req.URL.Path, derr)
+			} else {
+				err = fmt.Errorf("failed to decode response body: %w", derr)
+				return
+			}
 		}
 
 		invInfo = respBody.InvocationInfo

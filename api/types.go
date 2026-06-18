@@ -89,7 +89,7 @@ type Tag struct {
 }
 
 type Label struct {
-	Id   string `json:"id"`
+	Id   uint64 `json:"id"`
 	Name string `json:"name"`
 }
 
