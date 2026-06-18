@@ -5,6 +5,8 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/lillink13/yamusic-tui)](https://goreportcard.com/report/github.com/lillink13/yamusic-tui)
 [![Release](https://img.shields.io/github/v/release/lillink13/yamusic-tui)](https://github.com/lillink13/yamusic-tui/releases)
 
+> **This is a fork** of [`dece2183/yamusic-tui`](https://github.com/dece2183/yamusic-tui) by [@dece2183](https://github.com/dece2183), maintained by [@lillink13](https://github.com/lillink13). It carries modifications made starting in 2026 and, like the original, is distributed under the **GPL-3.0** license.
+
 An unofficial Yandex Music terminal client.<br>
 Based on [yandex-music-open-api](https://github.com/acherkashin/yandex-music-open-api).
 
