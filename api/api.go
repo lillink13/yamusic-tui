@@ -79,11 +79,13 @@ func proccessRequest[RetT any](req *http.Request) (result RetT, invInfo InvocInf
 		dec := json.NewDecoder(resp.Body)
 		if derr := dec.Decode(&respBody); derr != nil && derr != io.EOF {
 			var typeErr *json.UnmarshalTypeError
-			if errors.As(derr, &typeErr) {
-				// Yandex's unofficial schema drifts over time; a single
-				// field-type mismatch still leaves the rest of the response
-				// decoded, so keep the partial result rather than dropping the
-				// whole response. Log it so the drift stays visible.
+			// Tolerate only a NESTED field-type mismatch (Field like
+			// "result.albums.labels.id") — Yandex's unofficial schema drifts and
+			// such a mismatch still leaves the rest of the response decoded, so
+			// the partial result is usable. A top-level mismatch (e.g. "result"
+			// itself the wrong type → garbage result) falls through to a hard
+			// error instead of silently returning zero values.
+			if errors.As(derr, &typeErr) && strings.Contains(typeErr.Field, ".") {
 				log.Print(log.LVL_WARNIGN, "partial decode of %s: %s", req.URL.Path, derr)
 			} else {
 				err = fmt.Errorf("failed to decode response body: %w", derr)

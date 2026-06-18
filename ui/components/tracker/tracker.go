@@ -280,8 +280,14 @@ func (m *Model) Update(message tea.Msg) (*Model, tea.Cmd) {
 
 		case controls.PlayerCache.Contains(keypress):
 			if !m.IsStoped() {
-				m.trackWrapper.trackBuffer.BufferAll()
-				cmds = append(cmds, model.Cmd(CACHE_TRACK))
+				// Finish buffering off the UI goroutine so the interface stays
+				// responsive on a slow/large track, then trigger the cache write
+				// once the whole track is available.
+				buf := m.trackWrapper.trackBuffer
+				go func() {
+					buf.BufferAll()
+					m.program.Send(CACHE_TRACK)
+				}()
 			}
 
 		case controls.PlayerVolUp.Contains(keypress):

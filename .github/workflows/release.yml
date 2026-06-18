@@ -45,7 +45,7 @@ jobs:
           # macOS — external linker required so dyld accepts the binary on macOS 15+.
           # amd64 is cross-compiled from the arm64 runner (universal SDK + clang -arch).
           - { runner: macos-latest,     goos: darwin,  goarch: arm64, tags: '',        ldextra: ' -linkmode=external', asset: yamusic-tui-darwin-arm64 }
-          - { runner: macos-latest,     goos: darwin,  goarch: amd64, tags: '',        ldextra: ' -linkmode=external', asset: yamusic-tui-darwin-amd64 }
+          - { runner: macos-latest,     goos: darwin,  goarch: amd64, tags: '',        ldextra: ' -linkmode=external', asset: yamusic-tui-darwin-amd64, cflags: '-arch x86_64' }
           # Windows x86_64 (best-effort; ~1% of users)
           - { runner: windows-latest,   goos: windows, goarch: amd64, tags: '',        ldextra: '',                   asset: yamusic-tui-windows-amd64.exe }
           - { runner: windows-latest,   goos: windows, goarch: amd64, tags: nomedia,   ldextra: '',                   asset: yamusic-tui-windows-amd64-nomedia.exe }
@@ -62,6 +62,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '1'
+          # darwin/amd64 is cross-compiled from the arm64 runner; tell clang to
+          # target x86_64 (empty for every other matrix entry).
+          CGO_CFLAGS: ${{ matrix.cflags }}
+          CGO_LDFLAGS: ${{ matrix.cflags }}
         shell: bash
         run: |
           tagflag=""

@@ -482,6 +482,11 @@ func (m *Model) applyLoadedData(data dataLoadedMsg) {
 			station.Tracks = data.likedTracks
 			m.playlists.SetItem(i, station)
 		case playlist.LOCAL:
+			if data.cachedTracks == nil {
+				// cache.ListTracks failed — leave the station as-is rather than
+				// blanking it (matches MYWAVE/LIKES and the original behavior).
+				continue
+			}
 			station.Tracks = data.cachedTracks
 			m.playlists.SetItem(i, station)
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/lillink13/yamusic-tui/api"
+	"github.com/lillink13/yamusic-tui/cache"
 	"github.com/lillink13/yamusic-tui/config"
 	"github.com/lillink13/yamusic-tui/log"
 	"github.com/lillink13/yamusic-tui/media"
@@ -22,6 +23,7 @@ func main() {
 
 	style.Apply(config.Current.Style)
 	api.SetupClient(config.Current.Proxy)
+	cache.CleanPartial()
 
 	if config.Current.Token == "" {
 		err = loginpage.New().Run()

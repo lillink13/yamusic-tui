@@ -53,6 +53,12 @@ func (m *Model) rotateTracks(currentPlaylist *playlist.Item) {
 		m.Send(tracker.STOP)
 		return
 	}
+	if len(suggestedTracks.Sequence) == 0 {
+		log.Print(log.LVL_ERROR, "rotor returned an empty track sequence")
+		m.tracker.ShowError("next track obtain failure")
+		m.Send(tracker.STOP)
+		return
+	}
 
 	currentPlaylist.SessionBatch = suggestedTracks.BatchId
 	currentPlaylist.Tracks = append(currentPlaylist.Tracks, suggestedTracks.Sequence[0].Track)

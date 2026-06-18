@@ -40,6 +40,25 @@ func TestParseConfigKeepsExplicitValues(t *testing.T) {
 	}
 }
 
+func TestParseConfigKeepsExplicitZeroValues(t *testing.T) {
+	// An explicit 0 must be honored (start muted / disable rewind), not treated
+	// as "field omitted" and clobbered back to the default.
+	cfg, err := parseConfig([]byte("volume: 0\nrewind-duration-s: 0\n"))
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if cfg.Volume != 0 {
+		t.Errorf("Volume = %v, want explicit 0", cfg.Volume)
+	}
+	if cfg.RewindDuration != 0 {
+		t.Errorf("RewindDuration = %v, want explicit 0", cfg.RewindDuration)
+	}
+	// An omitted scalar should still fall back to the default.
+	if cfg.BufferSize != defaultConfig.BufferSize {
+		t.Errorf("BufferSize = %v, want default %v", cfg.BufferSize, defaultConfig.BufferSize)
+	}
+}
+
 func TestParseConfigPopulatesNestedDefaults(t *testing.T) {
 	cfg, err := parseConfig([]byte("token: abc\n"))
 	if err != nil {

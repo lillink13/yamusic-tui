@@ -23,8 +23,8 @@ jobs:
         run: |
           out=$(gofmt -l .)
           if [ -n "$out" ]; then
-            echo "These files are not gofmt-formatted:"
-            echo "$out"
+            echo "These files are not gofmt-formatted:" >&2
+            echo "$out" >&2
             exit 1
           fi
       - name: go vet

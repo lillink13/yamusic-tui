@@ -63,26 +63,19 @@ func load() (Config, error) {
 // field the user omitted. It is split out from load() so the merge logic can be
 // unit-tested without touching the filesystem.
 func parseConfig(content []byte) (Config, error) {
-	var newConfig Config
-	err := yaml.Unmarshal(content, &newConfig)
-	if err != nil {
+	// Pre-seed the scalar defaults, then unmarshal on top. yaml.Unmarshal only
+	// overwrites keys that are actually present, so an omitted key keeps the
+	// default while an explicit value — including an intentional 0 (volume: 0,
+	// rewind-duration-s: 0) — is honored. (A bare `== 0` check after unmarshal
+	// can't tell "omitted" from "explicitly zero" and would clobber the latter.)
+	newConfig := Config{
+		Volume:         defaultConfig.Volume,
+		VolumeStep:     defaultConfig.VolumeStep,
+		BufferSize:     defaultConfig.BufferSize,
+		RewindDuration: defaultConfig.RewindDuration,
+	}
+	if err := yaml.Unmarshal(content, &newConfig); err != nil {
 		return defaultConfig, err
-	}
-
-	// Top-level scalar defaults. A partial config (e.g. one written by an older
-	// version that lacked these keys) must not silently end up muted, with a
-	// zero playback buffer, or with no rewind step.
-	if newConfig.Volume == 0 {
-		newConfig.Volume = defaultConfig.Volume
-	}
-	if newConfig.VolumeStep == 0 {
-		newConfig.VolumeStep = defaultConfig.VolumeStep
-	}
-	if newConfig.BufferSize == 0 {
-		newConfig.BufferSize = defaultConfig.BufferSize
-	}
-	if newConfig.RewindDuration == 0 {
-		newConfig.RewindDuration = defaultConfig.RewindDuration
 	}
 
 	if newConfig.Search == nil {
