@@ -25,11 +25,19 @@ import (
 	"github.com/dece2183/go-clipboard"
 )
 
-type LoadingMsg uint
-
-const (
-	LOADING_DONE LoadingMsg = iota
-)
+// dataLoadedMsg carries everything fetched by the background load command so it
+// can be applied to the model inside Update (on the Bubble Tea goroutine)
+// instead of being mutated directly from a background goroutine.
+type dataLoadedMsg struct {
+	client        *api.YaMusicClient
+	wave          *api.StationTracks
+	likedTracks   []api.Track
+	likedIds      map[string]bool
+	cachedTracks  []api.Track
+	cachedIds     map[string]bool
+	userPlaylists []*playlist.Item
+	errLabel      string
+}
 
 type Model struct {
 	program       *tea.Program
@@ -97,8 +105,8 @@ func (m *Model) Send(msg tea.Msg) {
 
 func (m *Model) Init() tea.Cmd {
 	m.isLoading = true
-	go m.initialLoad()
-	return m.spinner.Tick
+	m.tracker.HideError()
+	return tea.Batch(m.spinner.Tick, m.loadData)
 }
 
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -108,7 +116,8 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	)
 
 	switch msg := message.(type) {
-	case LoadingMsg:
+	case dataLoadedMsg:
+		m.applyLoadedData(msg)
 		m.isLoading = false
 		return m, model.Cmd(playlist.CURSOR_UP)
 
@@ -131,10 +140,11 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		case controls.Reload.Contains(keypress):
 			m.isLoading = true
+			m.tracker.HideError()
 			cmd = m.playlists.Reset()
 			cmds = append(cmds, cmd)
 			cmds = append(cmds, m.spinner.Tick)
-			go m.initialLoad()
+			cmds = append(cmds, m.loadData)
 		default:
 			if m.isLoading {
 				m.spinner, cmd = m.spinner.Update(message)
@@ -349,118 +359,144 @@ func (m *Model) resize(width, height int) {
 	m.inputDialog.SetWidth(searchWidth)
 }
 
-func (m *Model) initialLoad() {
-	var err error
+// loadData performs all start-up network and disk I/O on a background goroutine
+// (it is used as a tea.Cmd) and returns the result as a message. It must not
+// touch the model directly — applyLoadedData applies the result inside Update,
+// on the Bubble Tea goroutine.
+func (m *Model) loadData() tea.Msg {
+	var result dataLoadedMsg
 
-	m.tracker.HideError()
+	// The local cache is available regardless of authentication.
+	if cached, err := cache.ListTracks(); err != nil {
+		log.Print(log.LVL_ERROR, "failed to list cached tracks: %s", err)
+		result.errLabel = "cache list"
+	} else {
+		result.cachedTracks = cached
+		result.cachedIds = make(map[string]bool, len(cached))
+		for i := range cached {
+			result.cachedIds[cached[i].Id] = true
+		}
+	}
+
 	if len(config.Current.Token) == 0 {
 		log.Print(log.LVL_ERROR, "missing client token, check the config file at '%s'", config.Path())
-		m.tracker.ShowError("missing token")
-		m.client = nil
-	} else {
-		m.client, err = api.NewClient(config.DirName, config.Current.Token)
-		if err != nil {
-			if _, ok := err.(*url.Error); ok {
-				log.Print(log.LVL_ERROR, "failed to connect to the Yandex server: %s", err)
-				m.tracker.ShowError("unable to connect to the Yandex server")
-			} else {
-				log.Print(log.LVL_ERROR, "client init error: %s", err)
-				m.tracker.ShowError("unable to login: " + err.Error())
-			}
+		result.errLabel = "missing token"
+		return result
+	}
+
+	client, err := api.NewClient(config.DirName, config.Current.Token)
+	if err != nil {
+		if _, ok := err.(*url.Error); ok {
+			log.Print(log.LVL_ERROR, "failed to connect to the Yandex server: %s", err)
+			result.errLabel = "unable to connect to the Yandex server"
+		} else {
+			log.Print(log.LVL_ERROR, "client init error: %s", err)
+			result.errLabel = "unable to login: " + err.Error()
 		}
+		return result
+	}
+	result.client = client
+
+	// My Wave rotor session.
+	if session, err := client.RotorNewSession(api.MyWaveId); err != nil {
+		log.Print(log.LVL_ERROR, "unable to init rotor session: %s", err)
+		result.errLabel = "unable to init rotor session"
+	} else {
+		result.wave = &session
+	}
+
+	// Liked tracks (ids + full info).
+	if likes, err := client.LikedTracks(); err != nil {
+		log.Print(log.LVL_ERROR, "failed to obtain liked tracks for the first time: %s", err)
+		result.errLabel = "liked tracks"
+	} else {
+		likedTracksId := make([]string, len(likes))
+		result.likedIds = make(map[string]bool, len(likes))
+		for l := range likes {
+			result.likedIds[likes[l].Id] = true
+			likedTracksId[l] = likes[l].Id
+		}
+		if full, err := client.Tracks(likedTracksId); err != nil {
+			log.Print(log.LVL_ERROR, "failed to obtain liked tracks full info: %s", err)
+			result.errLabel = "liked tracks info"
+		} else {
+			result.likedTracks = full
+		}
+	}
+
+	// User playlists.
+	if playlists, err := client.ListPlaylists(); err != nil {
+		log.Print(log.LVL_ERROR, "failed to obtain user playlists: %s", err)
+		result.errLabel = "playlists"
+	} else {
+		for _, pl := range playlists {
+			playlistTracks, err := client.PlaylistTracks(pl.Kind, pl.Owner.Uid, false)
+			if err != nil {
+				log.Print(log.LVL_ERROR, "failed to obtain playlist [%s] tracks: %s", pl.Title, err)
+				result.errLabel = "playlist tracks"
+				continue
+			}
+			result.userPlaylists = append(result.userPlaylists, &playlist.Item{
+				Name:     pl.Title,
+				Kind:     pl.Kind,
+				Revision: pl.Revision,
+				Active:   true,
+				Subitem:  true,
+				Tracks:   playlistTracks,
+			})
+		}
+	}
+
+	return result
+}
+
+// applyLoadedData writes the result of loadData into the model. It runs inside
+// Update, so every mutation here happens on the Bubble Tea goroutine.
+func (m *Model) applyLoadedData(data dataLoadedMsg) {
+	m.client = data.client
+
+	if data.likedIds != nil {
+		m.likedTracksMap = data.likedIds
+	}
+	if data.cachedIds != nil {
+		m.cachedTracksMap = data.cachedIds
 	}
 
 	for i, station := range m.playlists.Items() {
 		switch station.Kind {
 		case playlist.MYWAVE:
-			if m.client == nil {
+			if data.wave == nil {
 				continue
 			}
-
-			session, err := m.client.RotorNewSession(api.MyWaveId)
-			if err != nil {
-				log.Print(log.LVL_ERROR, "unable to init rotor session: %s", err)
-				m.tracker.ShowError("unable to init rotor session")
-				return
+			station.StationId = data.wave.Id
+			station.SessionId = data.wave.RadioSessionId
+			station.SessionBatch = data.wave.BatchId
+			if len(data.wave.Sequence) > 0 {
+				station.Tracks = []api.Track{data.wave.Sequence[0].Track}
 			}
-
-			station.StationId = session.Id
-			station.SessionId = session.RadioSessionId
-			station.SessionBatch = session.BatchId
-			station.Tracks = []api.Track{session.Sequence[0].Track}
-
 			m.playlists.SetItem(i, station)
 		case playlist.LIKES:
-			if m.client == nil {
+			if data.likedTracks == nil {
 				continue
 			}
-
-			likes, err := m.client.LikedTracks()
-			if err != nil {
-				log.Print(log.LVL_ERROR, "failed to obtain liked tracks for the first time: %s", err)
-				m.tracker.ShowError("liked tracks")
-				continue
-			}
-
-			likedTracksId := make([]string, len(likes))
-			for l, track := range likes {
-				m.likedTracksMap[track.Id] = true
-				likedTracksId[l] = track.Id
-			}
-
-			likedTracks, err := m.client.Tracks(likedTracksId)
-			if err != nil {
-				log.Print(log.LVL_ERROR, "failed to obtain liked tracks full info: %s", err)
-				m.tracker.ShowError("liked tracks info")
-				continue
-			}
-
-			station.Tracks = likedTracks
+			station.Tracks = data.likedTracks
 			m.playlists.SetItem(i, station)
 		case playlist.LOCAL:
-			station.Tracks, err = cache.ListTracks()
-			if err != nil {
-				log.Print(log.LVL_ERROR, "failed to list cached tracks: %s", err)
-				m.tracker.ShowError("cache list")
-				continue
-			}
-			for i := range station.Tracks {
-				m.cachedTracksMap[station.Tracks[i].Id] = true
-			}
+			station.Tracks = data.cachedTracks
 			m.playlists.SetItem(i, station)
-		default:
 		}
 	}
 
-	if m.client != nil {
-		playlists, err := m.client.ListPlaylists()
-		if err == nil {
-			for _, pl := range playlists {
-				playlistTracks, err := m.client.PlaylistTracks(pl.Kind, pl.Owner.Uid, false)
-				if err != nil {
-					log.Print(log.LVL_ERROR, "failed to obtain playlist [%s] tracks: %s", pl.Title, err)
-					m.tracker.ShowError("playlist tracks")
-					continue
-				}
-
-				m.playlists.InsertItem(-1, &playlist.Item{
-					Name:     pl.Title,
-					Kind:     pl.Kind,
-					Revision: pl.Revision,
-					Active:   true,
-					Subitem:  true,
-					Tracks:   playlistTracks,
-				})
-			}
-		} else {
-			log.Print(log.LVL_ERROR, "failed to obtain user playlists: %s", err)
-			m.tracker.ShowError("playlists")
-		}
+	for _, pl := range data.userPlaylists {
+		m.playlists.InsertItem(-1, pl)
 	}
 
 	m.currentPlaylistIndex = -1
 	m.playlists.Select(0)
-	m.Send(LOADING_DONE)
+
+	if data.errLabel != "" {
+		m.tracker.ShowError(data.errLabel)
+	}
 }
 
 func (m *Model) mediaHandle() {
