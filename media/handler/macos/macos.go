@@ -139,6 +139,7 @@ static void updateNowPlayingInfo(
     const char *title,
     const char *artist,
     const char *album,
+    const char *coverPath,
     double durationSeconds,
     double elapsedSeconds,
     int isPlaying
@@ -153,6 +154,20 @@ static void updateNowPlayingInfo(
     }
     if (album) {
         info[MPMediaItemPropertyAlbumTitle] = [NSString stringWithUTF8String:album];
+    }
+
+    if (coverPath != NULL && coverPath[0] != '\0') {
+        NSImage *image = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:coverPath]];
+        if (image != nil) {
+            MPMediaItemArtwork *artwork = [[MPMediaItemArtwork alloc]
+                initWithBoundsSize:[image size]
+                requestHandler:^NSImage *(CGSize requestedSize) {
+                    return image;
+                }];
+            info[MPMediaItemPropertyArtwork] = artwork;
+            [artwork release];
+        }
+        [image release];
     }
 
     info[MPMediaItemPropertyPlaybackDuration] = @(durationSeconds);
@@ -268,9 +283,11 @@ func (mh *MacosHandler) OnPlayback() {
 	defer C.free(unsafe.Pointer(cArtist))
 	cAlbum := C.CString(album)
 	defer C.free(unsafe.Pointer(cAlbum))
+	cCover := C.CString(metadata.CoverUrl)
+	defer C.free(unsafe.Pointer(cCover))
 
 	C.updateNowPlayingInfo(
-		cTitle, cArtist, cAlbum,
+		cTitle, cArtist, cAlbum, cCover,
 		C.double(metadata.Length.Seconds()),
 		C.double(0),
 		C.int(1),
