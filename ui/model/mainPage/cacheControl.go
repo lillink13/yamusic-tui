@@ -71,6 +71,16 @@ func (m *Model) cacheCurrentTrack() tea.Cmd {
 	return cmd
 }
 
+// dropCorruptCache removes a truncated cache entry so the track is streamed
+// fresh. Unlike removeCache it makes no UI fuss and leaves the LOCAL playlist
+// entry in place (it self-corrects on the next cache listing once the file is
+// gone); clearing cachedTracksMap drops the "cached" indicator.
+func (m *Model) dropCorruptCache(track *api.Track) {
+	cache.Remove(track.Id)
+	cache.Discard(track.Id)
+	delete(m.cachedTracksMap, track.Id)
+}
+
 func (m *Model) removeCache(track *api.Track) tea.Cmd {
 	if m.tracker.CurrentTrack().Id == track.Id && len(m.tracker.CurrentTrack().RealId) == 0 {
 		m.tracker.ShowError("can't remove currently playing track")

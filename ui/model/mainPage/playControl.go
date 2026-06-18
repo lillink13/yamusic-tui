@@ -22,6 +22,10 @@ import (
 const (
 	_TRACK_DOWNLOAD_TRIES     = 3
 	_TRACK_FINISHED_THRESHOLD = 0.8
+	// Minimum bytes-per-millisecond a real cache entry should have (~32 kbps,
+	// well below Yandex's lowest real bitrate). Anything smaller is a truncated
+	// file that plays for ~1s and then skips.
+	_MIN_CACHE_BYTES_PER_MS = 4
 )
 
 func (m *Model) feedbackOnTrack(batch string) *api.RotorFeedback {
@@ -217,9 +221,17 @@ skipcover:
 		}
 	}
 	trackReader, trackSize, err = cache.Read(track.Id)
-	if err == nil {
-		trackFromCache = true
-	} else {
+	trackFromCache = err == nil
+	if trackFromCache && track.DurationMs > 0 && trackSize < int64(track.DurationMs)*_MIN_CACHE_BYTES_PER_MS {
+		// A cache entry far too small for the track's duration is truncated (it
+		// plays for ~1s then skips). Drop it and stream a fresh copy; if the
+		// cache policy applies, it is re-cached correctly (atomically) afterwards.
+		log.Print(log.LVL_WARNIGN, "cached track [%s] is truncated (%d bytes for %dms); re-streaming", track.Id, trackSize, track.DurationMs)
+		trackReader.Close()
+		m.dropCorruptCache(track)
+		trackFromCache = false
+	}
+	if !trackFromCache {
 		var trackInfos []api.TrackDownloadInfo
 		var bestTrackInfo api.TrackDownloadInfo
 
