@@ -49,18 +49,41 @@ func Read(trackId string) (*os.File, int64, error) {
 	return file, stat.Size(), nil
 }
 
+// Write opens a temporary file for a cache entry. The track is written here and
+// only becomes a usable cache entry after Commit renames it into place, so an
+// interrupted or partial write never leaves a playable but truncated file.
 func Write(trackId string) (*os.File, error) {
 	dir, err := getCacheDir()
 	if err != nil {
 		return nil, err
 	}
 
-	file, err := os.OpenFile(filepath.Join(dir, trackId+".mp3"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
+	file, err := os.OpenFile(filepath.Join(dir, trackId+".mp3.part"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
 
 	return file, nil
+}
+
+// Commit atomically promotes a fully-written temporary file (from Write) to its
+// final cache entry. Call it only after the complete track has been written and
+// the file has been closed.
+func Commit(trackId string) error {
+	dir, err := getCacheDir()
+	if err != nil {
+		return err
+	}
+	return os.Rename(filepath.Join(dir, trackId+".mp3.part"), filepath.Join(dir, trackId+".mp3"))
+}
+
+// Discard removes the temporary file left by Write, e.g. after a write error.
+func Discard(trackId string) error {
+	dir, err := getCacheDir()
+	if err != nil {
+		return err
+	}
+	return os.Remove(filepath.Join(dir, trackId+".mp3.part"))
 }
 
 func Remove(trackId string) error {

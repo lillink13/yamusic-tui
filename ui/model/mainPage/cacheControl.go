@@ -17,9 +17,16 @@ func (m *Model) cacheCurrentTrack() tea.Cmd {
 		return nil
 	}
 
+	buf := m.tracker.TrackBuffer()
+	if buf == nil || !buf.IsBuffered() {
+		// Caching a partially-buffered track yields a truncated file that plays
+		// for ~1s and then skips; only cache once the whole track is buffered.
+		return nil
+	}
+
 	metadataFile, err := os.OpenFile(m.metadataFilePath(), os.O_RDONLY, 0755)
 	if err != nil {
-		log.Print(log.LVL_ERROR, "failed to open cache file: %s", err)
+		log.Print(log.LVL_ERROR, "failed to open metadata file: %s", err)
 		m.tracker.ShowError("cache open")
 		return nil
 	}
@@ -33,12 +40,23 @@ func (m *Model) cacheCurrentTrack() tea.Cmd {
 		return nil
 	}
 
-	defer cacheFile.Close()
-
 	tag := id3v2.NewEmptyTag()
 	tag.Reset(metadataFile, id3v2.Options{Parse: true})
-	tag.WriteTo(cacheFile)
-	m.tracker.TrackBuffer().WriteTo(cacheFile)
+	if _, err = tag.WriteTo(cacheFile); err == nil {
+		_, err = buf.WriteTo(cacheFile)
+	}
+	if cerr := cacheFile.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = cache.Commit(currentTrack.Id)
+	}
+	if err != nil {
+		cache.Discard(currentTrack.Id)
+		log.Print(log.LVL_ERROR, "failed to cache track: %s", err)
+		m.tracker.ShowError("cache write")
+		return nil
+	}
 
 	m.cachedTracksMap[currentTrack.Id] = true
 	cachePlaylist, index := m.playlists.GetFirst(playlist.LOCAL)
