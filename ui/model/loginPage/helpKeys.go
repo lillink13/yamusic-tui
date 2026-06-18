@@ -7,6 +7,7 @@ import (
 
 type helpKeyMap struct {
 	apply key.Binding
+	open  key.Binding
 	quit  key.Binding
 }
 
@@ -17,6 +18,10 @@ func newHelpMap() *helpKeyMap {
 			controls.Apply.Binding(),
 			controls.Apply.Help("login"),
 		),
+		open: key.NewBinding(
+			key.WithKeys("ctrl+o"),
+			key.WithHelp("ctrl+o", "open browser"),
+		),
 		quit: key.NewBinding(
 			controls.Quit.Binding(),
 			controls.Quit.Help("quit"),
@@ -25,7 +30,7 @@ func newHelpMap() *helpKeyMap {
 }
 
 func (k helpKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.apply, k.quit}
+	return []key.Binding{k.apply, k.open, k.quit}
 }
 
 func (k helpKeyMap) FullHelp() [][]key.Binding {
