@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/lillink13/yamusic-tui/api"
@@ -39,6 +40,29 @@ type dataLoadedMsg struct {
 	errLabel      string
 }
 
+// mediaSnapshot is a small, mutex-guarded view of the player state that the
+// system media handler (MPRIS / macOS Now Playing / Windows SMTC) queries from
+// its own goroutine. The Bubble Tea Update goroutine is the sole writer (it owns
+// the tracker); mediaHandle only ever reads this snapshot, so the media handler
+// never touches live tracker state across goroutines.
+type mediaSnapshot struct {
+	state    handler.PlaybackState
+	volume   float64
+	position time.Duration
+	metadata handler.TrackMetadata
+}
+
+// Messages emitted by mediaHandle so that media-key / MPRIS commands are applied
+// to the tracker on the Bubble Tea goroutine (inside Update) instead of from the
+// mediaHandle goroutine, which used to race the Update loop.
+type (
+	mediaPlayPauseMsg struct{}
+	mediaSeekMsg      time.Duration // relative rewind
+	mediaSetPosMsg    time.Duration // absolute position
+	mediaSetVolumeMsg float64
+	mediaShuffleMsg   struct{}
+)
+
 type Model struct {
 	program       *tea.Program
 	client        *api.YaMusicClient
@@ -62,6 +86,9 @@ type Model struct {
 	currentPlaylistIndex int
 	likedTracksMap       map[string]bool
 	cachedTracksMap      map[string]bool
+
+	mediaMu   sync.RWMutex
+	mediaSnap mediaSnapshot
 }
 
 // mainpage.Model constructor.
@@ -80,6 +107,11 @@ func New(mediaHandler handler.MediaHandler) *Model {
 	m.tracker = tracker.New(m.program, &m.likedTracksMap)
 	m.searchDialog = search.New()
 	m.inputDialog = input.New()
+
+	// Seed the media snapshot so a query arriving before the first Update gets a
+	// sane answer (the player starts stopped at the configured volume).
+	m.mediaSnap.state = handler.STATE_STOPED
+	m.mediaSnap.volume = config.Current.Volume
 
 	return m
 }
@@ -280,6 +312,30 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.renamePlaylistControl(msg)
 		cmds = append(cmds, cmd)
 
+	// system media handler commands, applied here on the Bubble Tea goroutine
+	// (mediaHandle forwards them as messages instead of touching the tracker).
+	case mediaPlayPauseMsg:
+		if m.tracker.IsPlaying() {
+			cmds = append(cmds, model.Cmd(tracker.PAUSE))
+		} else {
+			cmds = append(cmds, model.Cmd(tracker.PLAY))
+		}
+	case mediaSeekMsg:
+		cmd = m.tracker.Rewind(time.Duration(msg))
+		cmds = append(cmds, cmd)
+	case mediaSetPosMsg:
+		m.tracker.SetPos(time.Duration(msg))
+	case mediaSetVolumeMsg:
+		m.tracker.SetVolume(float64(msg))
+	case mediaShuffleMsg:
+		if m.currentPlaylistIndex >= 0 && m.currentPlaylistIndex < len(m.playlists.Items()) {
+			currentPlaylist := m.playlists.Items()[m.currentPlaylistIndex]
+			if len(currentPlaylist.Tracks) > 0 && currentPlaylist.Kind >= playlist.LIKES {
+				cmd = m.shufflePlaylist(currentPlaylist)
+				cmds = append(cmds, cmd)
+			}
+		}
+
 	default:
 		if m.isLoading {
 			m.spinner, cmd = m.spinner.Update(message)
@@ -300,6 +356,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	m.refreshMediaSnapshot()
 	return m, tea.Batch(cmds...)
 }
 
@@ -504,6 +561,11 @@ func (m *Model) applyLoadedData(data dataLoadedMsg) {
 	}
 }
 
+// mediaHandle services the system media handler from its own goroutine. Inbound
+// commands are forwarded as messages so they are applied to the tracker inside
+// Update (never from here); synchronous queries are answered from the snapshot
+// that Update keeps fresh. This goroutine therefore never touches live tracker
+// or playlist state, which removes the data races with the Update loop.
 func (m *Model) mediaHandle() {
 	for msg := range m.mediaHandler.Message() {
 		switch msg.Type {
@@ -512,106 +574,130 @@ func (m *Model) mediaHandle() {
 		case handler.MSG_PREVIOUS:
 			m.Send(tracker.PREV)
 		case handler.MSG_PLAY:
-			m.tracker.Play()
 			m.Send(tracker.PLAY)
 		case handler.MSG_PAUSE:
-			m.tracker.Pause()
 			m.Send(tracker.PAUSE)
 		case handler.MSG_PLAYPAUSE:
-			if m.tracker.IsPlaying() {
-				m.tracker.Pause()
-				m.Send(tracker.PAUSE)
-			} else {
-				m.tracker.Play()
-				m.Send(tracker.PLAY)
-			}
+			m.Send(mediaPlayPauseMsg{})
 		case handler.MSG_STOP:
 			m.Send(tracker.STOP)
 		case handler.MSG_SEEK:
-			offset, ok := msg.Arg.(time.Duration)
-			if ok {
-				m.tracker.Rewind(offset)
+			if offset, ok := msg.Arg.(time.Duration); ok {
+				m.Send(mediaSeekMsg(offset))
 			}
 		case handler.MSG_SETPOS:
-			pos, ok := msg.Arg.(time.Duration)
-			if ok {
-				m.tracker.SetPos(pos)
+			if pos, ok := msg.Arg.(time.Duration); ok {
+				m.Send(mediaSetPosMsg(pos))
 			}
-
 		case handler.MSG_SET_SHUFFLE:
-			val, ok := msg.Arg.(bool)
-			if !ok || !val {
-				break
-			}
-			currentPlaylist := m.playlists.Items()[m.currentPlaylistIndex]
-			if len(currentPlaylist.Tracks) == 0 {
-				break
-			}
-			if currentPlaylist.Kind >= playlist.LIKES {
-				cmd := m.shufflePlaylist(currentPlaylist)
-				m.Send(func() tea.Cmd {
-					return cmd
-				})
+			if val, ok := msg.Arg.(bool); ok && val {
+				m.Send(mediaShuffleMsg{})
 			}
 		case handler.MSG_SET_VOLUME:
-			vol, ok := msg.Arg.(float64)
-			if ok {
-				m.tracker.SetVolume(vol)
+			if vol, ok := msg.Arg.(float64); ok {
+				m.Send(mediaSetVolumeMsg(vol))
 			}
 
 		case handler.MSG_GET_PLAYBACKSTATUS:
-			var state handler.PlaybackState
-			if m.tracker.IsPlaying() {
-				state = handler.STATE_PLAYING
-			} else {
-				if m.tracker.IsStoped() {
-					state = handler.STATE_STOPED
-				} else {
-					state = handler.STATE_PAUSED
-				}
-			}
-			m.mediaHandler.SendAnswer(state)
+			m.mediaHandler.SendAnswer(m.mediaPlaybackState())
 		case handler.MSG_GET_SHUFFLE:
 			m.mediaHandler.SendAnswer(false)
 		case handler.MSG_GET_METADATA:
-			if m.tracker.IsStoped() {
-				m.mediaHandler.SendAnswer(handler.TrackMetadata{})
-				break
-			}
-			track := m.tracker.CurrentTrack()
-			artists := make([]string, 0, len(track.Artists))
-			for i := range track.Artists {
-				artists = append(artists, track.Artists[i].Name)
-			}
-			albumArtists := make([]string, 0)
-			var albumName string
-			genre := make([]string, 0)
-			if len(track.Albums) != 0 {
-				for i := range track.Albums[0].Artists {
-					albumArtists = append(albumArtists, track.Albums[0].Artists[i].Name)
-				}
-				albumName = track.Albums[0].Title
-				genre = append(genre, track.Albums[0].Genre)
-			}
-
-			md := handler.TrackMetadata{
-				TrackId:      track.Id,
-				Length:       time.Duration(track.DurationMs) * time.Millisecond,
-				CoverUrl:     m.coverFilePath(track),
-				AlbumName:    albumName,
-				AlbumArtists: albumArtists,
-				Artists:      artists,
-				Genre:        genre,
-				Title:        track.Title,
-				Url:          api.ShareTrackLink(track),
-			}
-			m.mediaHandler.SendAnswer(md)
+			m.mediaHandler.SendAnswer(m.mediaMetadata())
 		case handler.MSG_GET_VOLUME:
-			m.mediaHandler.SendAnswer(m.tracker.Volume())
+			m.mediaHandler.SendAnswer(m.mediaVolume())
 		case handler.MSG_GET_POSITION:
-			m.mediaHandler.SendAnswer(m.tracker.Position())
+			m.mediaHandler.SendAnswer(m.mediaPosition())
 		}
 	}
+}
+
+// refreshMediaSnapshot copies the current player state into the mutex-guarded
+// snapshot read by mediaHandle. It runs at the end of Update, so every read of
+// the tracker here happens on the Bubble Tea goroutine.
+func (m *Model) refreshMediaSnapshot() {
+	var state handler.PlaybackState
+	switch {
+	case m.tracker.IsPlaying():
+		state = handler.STATE_PLAYING
+	case m.tracker.IsStoped():
+		state = handler.STATE_STOPED
+	default:
+		state = handler.STATE_PAUSED
+	}
+	volume := m.tracker.Volume()
+	position := m.tracker.Position()
+
+	m.mediaMu.Lock()
+	m.mediaSnap.state = state
+	m.mediaSnap.volume = volume
+	m.mediaSnap.position = position
+	if state == handler.STATE_STOPED {
+		m.mediaSnap.metadata = handler.TrackMetadata{}
+	}
+	m.mediaMu.Unlock()
+}
+
+// setMediaMetadata stores the now-playing metadata in the snapshot. Called from
+// playTrack (on the Update goroutine) before notifying the media handler.
+func (m *Model) setMediaMetadata(track *api.Track) {
+	md := m.buildTrackMetadata(track)
+	m.mediaMu.Lock()
+	m.mediaSnap.metadata = md
+	m.mediaMu.Unlock()
+}
+
+func (m *Model) buildTrackMetadata(track *api.Track) handler.TrackMetadata {
+	artists := make([]string, 0, len(track.Artists))
+	for i := range track.Artists {
+		artists = append(artists, track.Artists[i].Name)
+	}
+	albumArtists := make([]string, 0)
+	var albumName string
+	genre := make([]string, 0)
+	if len(track.Albums) != 0 {
+		for i := range track.Albums[0].Artists {
+			albumArtists = append(albumArtists, track.Albums[0].Artists[i].Name)
+		}
+		albumName = track.Albums[0].Title
+		genre = append(genre, track.Albums[0].Genre)
+	}
+
+	return handler.TrackMetadata{
+		TrackId:      track.Id,
+		Length:       time.Duration(track.DurationMs) * time.Millisecond,
+		CoverUrl:     m.coverFilePath(track),
+		AlbumName:    albumName,
+		AlbumArtists: albumArtists,
+		Artists:      artists,
+		Genre:        genre,
+		Title:        track.Title,
+		Url:          api.ShareTrackLink(track),
+	}
+}
+
+func (m *Model) mediaPlaybackState() handler.PlaybackState {
+	m.mediaMu.RLock()
+	defer m.mediaMu.RUnlock()
+	return m.mediaSnap.state
+}
+
+func (m *Model) mediaVolume() float64 {
+	m.mediaMu.RLock()
+	defer m.mediaMu.RUnlock()
+	return m.mediaSnap.volume
+}
+
+func (m *Model) mediaPosition() time.Duration {
+	m.mediaMu.RLock()
+	defer m.mediaMu.RUnlock()
+	return m.mediaSnap.position
+}
+
+func (m *Model) mediaMetadata() handler.TrackMetadata {
+	m.mediaMu.RLock()
+	defer m.mediaMu.RUnlock()
+	return m.mediaSnap.metadata
 }
 
 func (m *Model) coverFilePath(track *api.Track) string {

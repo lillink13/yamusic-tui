@@ -310,6 +310,7 @@ skipcover:
 
 	m.tracker.StartTrack(track, trackBuffer, lyrics)
 	m.indicateCurrentTrackPlaying(true)
+	m.setMediaMetadata(track)
 	m.mediaHandler.OnPlayback()
 
 	if m.client != nil {
