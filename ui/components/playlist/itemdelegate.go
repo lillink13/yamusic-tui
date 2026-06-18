@@ -48,6 +48,13 @@ func (d ItemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 	}
 
 	name := item.Name
+	if item.Collapsible {
+		if item.Collapsed {
+			name = "▸ " + name
+		} else {
+			name = "▾ " + name
+		}
+	}
 	nameLen := lipgloss.Width(name)
 	maxLen := m.Width() - 5
 	if nameLen > maxLen {

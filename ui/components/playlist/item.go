@@ -14,6 +14,8 @@ type Item struct {
 	Active       bool
 	Subitem      bool
 	Rotor        bool
+	Collapsible  bool // a section header that folds the items below it
+	Collapsed    bool
 
 	Tracks        []api.Track
 	CurrentTrack  int
@@ -25,6 +27,11 @@ func (i *Item) FilterValue() string {
 }
 
 func (i *Item) IsSame(other *Item) bool {
+	// Stations all share Kind==STATION and may have duplicate display names, so
+	// identify them by StationId; everything else has a unique Kind+Name.
+	if i.Kind == STATION || other.Kind == STATION {
+		return i.Kind == other.Kind && i.StationId == other.StationId
+	}
 	return i.Kind == other.Kind && i.Name == other.Name
 }
 

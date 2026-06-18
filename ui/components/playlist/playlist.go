@@ -28,7 +28,9 @@ const (
 	MYWAVE
 	LIKES
 	LOCAL
-	// Should be the last to detect downloaded user playlists
+	STATION
+	// Should be the last to detect downloaded user playlists (Yandex assigns
+	// those large kinds, far above any built-in value here).
 	USER
 )
 

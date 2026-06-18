@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,7 +38,17 @@ type dataLoadedMsg struct {
 	cachedTracks  []api.Track
 	cachedIds     map[string]bool
 	userPlaylists []*playlist.Item
+	stations      []*playlist.Item
 	errLabel      string
+}
+
+// stationStartedMsg carries the result of lazily starting a radio station's
+// rotor session (done on first play, since starting a session per station at
+// load time would be slow and noisy).
+type stationStartedMsg struct {
+	stationId api.StationId
+	tracks    api.StationTracks
+	err       error
 }
 
 // mediaSnapshot is a small, mutex-guarded view of the player state that the
@@ -86,6 +97,9 @@ type Model struct {
 	currentPlaylistIndex int
 	likedTracksMap       map[string]bool
 	cachedTracksMap      map[string]bool
+	stations             []*playlist.Item
+	stationsCollapsed    bool
+	startingStations     map[api.StationId]bool
 
 	mediaMu   sync.RWMutex
 	mediaSnap mediaSnapshot
@@ -101,6 +115,7 @@ func New(mediaHandler handler.MediaHandler) *Model {
 	m.mediaHandler = mediaHandler
 	m.likedTracksMap = make(map[string]bool)
 	m.cachedTracksMap = make(map[string]bool)
+	m.startingStations = make(map[api.StationId]bool)
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.Points))
 	m.playlists = playlist.New(m.program, "YaMusic")
 	m.tracklist = tracklist.New(m.program, &m.likedTracksMap, &m.cachedTracksMap)
@@ -152,6 +167,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLoadedData(msg)
 		m.isLoading = false
 		return m, model.Cmd(playlist.CURSOR_UP)
+
+	case stationStartedMsg:
+		m.applyStationStarted(msg)
 
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
@@ -208,7 +226,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.displayPlaylist(selectedPlaylist)
 			m.indicateCurrentTrackPlaying(m.tracker.IsPlaying())
 
-			m.tracklist.Shufflable = (selectedPlaylist.Kind != playlist.NONE && selectedPlaylist.Kind != playlist.MYWAVE && len(selectedPlaylist.Tracks) > 0)
+			m.tracklist.Shufflable = (selectedPlaylist.Kind != playlist.NONE && !selectedPlaylist.Rotor && len(selectedPlaylist.Tracks) > 0)
 		case playlist.RENAME:
 			selectedPlaylist := m.playlists.SelectedItem()
 			if selectedPlaylist.Kind < playlist.USER {
@@ -226,7 +244,21 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg {
 		case tracklist.PLAY:
 			playlistItem := m.playlists.SelectedItem()
+			if playlistItem.Collapsible {
+				m.setStationsCollapsed(!playlistItem.Collapsed)
+				break
+			}
 			if !playlistItem.Active {
+				break
+			}
+			if playlistItem.Kind == playlist.STATION && playlistItem.SessionId == "" {
+				// First play of this station — start its rotor session, then
+				// stationStartedMsg fills the first track and plays it. Guard
+				// against repeated presses spawning duplicate sessions.
+				if !m.startingStations[playlistItem.StationId] {
+					m.startingStations[playlistItem.StationId] = true
+					cmds = append(cmds, m.startStation(playlistItem.StationId))
+				}
 				break
 			}
 			m.playSelectedPlaylist(m.tracklist.Index())
@@ -330,7 +362,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case mediaShuffleMsg:
 		if m.currentPlaylistIndex >= 0 && m.currentPlaylistIndex < len(m.playlists.Items()) {
 			currentPlaylist := m.playlists.Items()[m.currentPlaylistIndex]
-			if len(currentPlaylist.Tracks) > 0 && currentPlaylist.Kind >= playlist.LIKES {
+			if len(currentPlaylist.Tracks) > 0 && !currentPlaylist.Rotor {
 				cmd = m.shufflePlaylist(currentPlaylist)
 				cmds = append(cmds, cmd)
 			}
@@ -504,7 +536,47 @@ func (m *Model) loadData() tea.Msg {
 		}
 	}
 
+	// Radio stations (genres/moods/activities). Only the list is fetched here;
+	// each station's rotor session is started lazily on first play.
+	if stations, err := client.Stations(stationLanguage()); err != nil {
+		log.Print(log.LVL_ERROR, "failed to obtain radio stations: %s", err)
+		result.errLabel = "stations"
+	} else {
+		for i := range stations {
+			station := stations[i].Station
+			if station.Id == api.MyWaveId {
+				continue // My Wave already has its own entry
+			}
+			result.stations = append(result.stations, &playlist.Item{
+				Name:      station.Name,
+				Kind:      playlist.STATION,
+				StationId: station.Id,
+				Active:    true,
+				Subitem:   true,
+				Rotor:     true,
+			})
+		}
+	}
+
 	return result
+}
+
+// stationLanguage picks the language for the rotor station list from the locale
+// environment (e.g. "ru_RU.UTF-8" -> "ru"), defaulting to Russian.
+func stationLanguage() string {
+	for _, name := range []string{"LC_ALL", "LANG", "LANGUAGE"} {
+		v := strings.ToLower(os.Getenv(name))
+		if v == "" {
+			continue
+		}
+		if i := strings.IndexAny(v, "_.@:"); i > 0 {
+			v = v[:i]
+		}
+		if len(v) >= 2 {
+			return v[:2]
+		}
+	}
+	return "ru"
 }
 
 // applyLoadedData writes the result of loadData into the model. It runs inside
@@ -553,6 +625,22 @@ func (m *Model) applyLoadedData(data dataLoadedMsg) {
 		m.playlists.InsertItem(-1, pl)
 	}
 
+	// Radio stations live in a collapsible section at the very bottom: there are
+	// many of them, so they must not push the user's playlists down. Collapsed by
+	// default — the header expands/collapses them.
+	m.stations = data.stations
+	m.stationsCollapsed = true
+	if len(m.stations) > 0 {
+		m.playlists.InsertItem(-1, &playlist.Item{Name: "", Kind: playlist.NONE})
+		m.playlists.InsertItem(-1, &playlist.Item{
+			Name:        "stations",
+			Kind:        playlist.NONE,
+			Active:      true,
+			Collapsible: true,
+			Collapsed:   true,
+		})
+	}
+
 	m.currentPlaylistIndex = -1
 	m.playlists.Select(0)
 
@@ -566,6 +654,118 @@ func (m *Model) applyLoadedData(data dataLoadedMsg) {
 // Update (never from here); synchronous queries are answered from the snapshot
 // that Update keeps fresh. This goroutine therefore never touches live tracker
 // or playlist state, which removes the data races with the Update loop.
+// startStation kicks off a rotor session for the given station (network I/O, so
+// it runs as a Cmd) and reports back via stationStartedMsg.
+func (m *Model) startStation(stationId api.StationId) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	client := m.client
+	return func() tea.Msg {
+		tracks, err := client.RotorNewSession(stationId)
+		return stationStartedMsg{stationId: stationId, tracks: tracks, err: err}
+	}
+}
+
+// applyStationStarted fills the station with its fresh session + first track and,
+// if the user is still on it, plays it. Runs inside Update. The station is found
+// by id (its sidebar index may have shifted, or it may even be collapsed away).
+func (m *Model) applyStationStarted(msg stationStartedMsg) {
+	// The start attempt is complete (success or not) — allow a retry if needed.
+	delete(m.startingStations, msg.stationId)
+
+	if msg.err != nil {
+		log.Print(log.LVL_ERROR, "failed to start station: %s", msg.err)
+		m.tracker.ShowError("station start")
+		return
+	}
+	if len(msg.tracks.Sequence) == 0 {
+		m.tracker.ShowError("empty station")
+		return
+	}
+
+	var st *playlist.Item
+	for _, s := range m.stations {
+		if s.StationId == msg.stationId {
+			st = s
+			break
+		}
+	}
+	if st == nil {
+		return
+	}
+
+	st.SessionId = msg.tracks.RadioSessionId
+	st.SessionBatch = msg.tracks.BatchId
+	st.Tracks = []api.Track{msg.tracks.Sequence[0].Track}
+	st.CurrentTrack = 0
+	st.SelectedTrack = 0
+
+	// Only auto-play if the user is still pointing at this station (same pointer).
+	if m.playlists.SelectedItem() == st {
+		m.displayPlaylist(st)
+		m.playSelectedPlaylist(0)
+	}
+}
+
+// setStationsCollapsed folds or unfolds the stations section. Stations are the
+// last section, so it just rebuilds everything after the header. A station that
+// is currently playing stays visible even when collapsed, so currentPlaylistIndex
+// (index-based) keeps resolving and playback continues.
+func (m *Model) setStationsCollapsed(collapsed bool) {
+	m.stationsCollapsed = collapsed
+
+	var playing *playlist.Item
+	if m.currentPlaylistIndex >= 0 && m.currentPlaylistIndex < len(m.playlists.Items()) {
+		playing = m.playlists.Items()[m.currentPlaylistIndex]
+	}
+
+	items := m.playlists.Items()
+	headerIdx := -1
+	for i := range items {
+		if items[i].Collapsible {
+			headerIdx = i
+			break
+		}
+	}
+	if headerIdx < 0 {
+		return
+	}
+	items[headerIdx].Collapsed = collapsed
+	m.playlists.SetItem(headerIdx, items[headerIdx])
+
+	// Drop every station currently under the header.
+	for len(m.playlists.Items()) > headerIdx+1 {
+		m.playlists.RemoveItem(headerIdx + 1)
+	}
+
+	insertIdx := headerIdx + 1
+	if collapsed {
+		// Keep only the playing station visible, so its index stays resolvable.
+		if playing != nil && playing.Kind == playlist.STATION {
+			m.playlists.InsertItem(insertIdx, playing)
+		}
+	} else {
+		for _, st := range m.stations {
+			m.playlists.InsertItem(insertIdx, st)
+			insertIdx++
+		}
+	}
+
+	// Re-resolve the playing playlist's index after the rebuild.
+	if playing != nil {
+		for i, it := range m.playlists.Items() {
+			if it == playing {
+				m.currentPlaylistIndex = i
+				break
+			}
+		}
+	}
+
+	m.playlists.Select(headerIdx)
+	m.displayPlaylist(m.playlists.SelectedItem())
+}
+
 func (m *Model) mediaHandle() {
 	for msg := range m.mediaHandler.Message() {
 		switch msg.Type {

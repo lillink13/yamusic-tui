@@ -139,7 +139,7 @@ func (m *Model) removeFromPlaylist(pl *playlist.Item, index int) tea.Cmd {
 	}
 
 	switch pl.Kind {
-	case playlist.NONE, playlist.MYWAVE:
+	case playlist.NONE, playlist.MYWAVE, playlist.STATION:
 		return nil
 	case playlist.LIKES:
 		selectedTrack := pl.Tracks[index]
@@ -204,7 +204,7 @@ func (m *Model) removeFromPlaylist(pl *playlist.Item, index int) tea.Cmd {
 
 func (m *Model) shufflePlaylist(pl *playlist.Item) tea.Cmd {
 	var cmds []tea.Cmd
-	if pl.Kind == playlist.NONE || pl.Kind == playlist.MYWAVE || len(pl.Tracks) == 0 {
+	if pl.Kind == playlist.NONE || pl.Rotor || len(pl.Tracks) == 0 {
 		return nil
 	}
 
@@ -257,12 +257,18 @@ func (m *Model) displayPlaylist(pl *playlist.Item) {
 	m.tracklist.SetItems(trackList)
 	m.tracklist.Select(pl.SelectedTrack)
 
-	switch pl.Kind {
-	case playlist.MYWAVE:
+	switch {
+	case pl.Collapsible:
+		if pl.Collapsed {
+			m.tracklist.Title = "Stations (press enter to expand)"
+		} else {
+			m.tracklist.Title = "Stations (press enter to collapse)"
+		}
+	case pl.Kind == playlist.MYWAVE:
 		m.tracklist.Title = "My wave"
-	case playlist.LIKES:
+	case pl.Kind == playlist.LIKES:
 		m.tracklist.Title = "Liked tracks"
-	case playlist.LOCAL:
+	case pl.Kind == playlist.LOCAL:
 		m.tracklist.Title = "Cached tracks"
 	default:
 		m.tracklist.Title = "Tracks from " + pl.Name
