@@ -24,9 +24,13 @@ type BufferedStream struct {
 	readBuffer  []byte
 	readIndex   int64
 	totalSize   int64
-	buffered    atomic.Bool
-	done        atomic.Bool
-	mux         sync.Mutex
+	// progressIndex mirrors readIndex for lock-free reads from Progress(). It is
+	// written under mux wherever readIndex changes, so readers (the UI goroutine
+	// via Position()/Rewind()) never race the audio goroutine's locked writes.
+	progressIndex atomic.Int64
+	buffered      atomic.Bool
+	done          atomic.Bool
+	mux           sync.Mutex
 }
 
 func NewBufferedStream(source io.ReadCloser, totalSize int64) *BufferedStream {
@@ -116,6 +120,7 @@ func (h *BufferedStream) Read(dest []byte) (n int, err error) {
 	}
 
 	h.lastError = err
+	h.progressIndex.Store(h.readIndex)
 	h.mux.Unlock()
 	return
 }
@@ -144,6 +149,7 @@ func (h *BufferedStream) Seek(offset int64, whence int) (pos int64, err error) {
 		h.readIndex = pos
 	}
 
+	h.progressIndex.Store(h.readIndex)
 	h.mux.Unlock()
 	return
 }
@@ -166,7 +172,7 @@ func (h *BufferedStream) Progress() float64 {
 	if h == nil {
 		return 0
 	}
-	return float64(h.readIndex) / float64(h.totalSize)
+	return float64(h.progressIndex.Load()) / float64(h.totalSize)
 }
 
 func (h *BufferedStream) BufferingProgress() float64 {
@@ -240,13 +246,19 @@ func (h *BufferedStream) bufferFrames(size int64) {
 		}
 
 		h.lastError = err
+		// Capture the channels under the lock: stopBuffering() closes and nils
+		// h.closed under the mutex, so reading the field from the select below
+		// without the lock would race. h.closed is only nil once buffered is set,
+		// which the check above already excluded, so closedCh is non-nil here.
+		closedCh := h.closed
+		timerCh := h.bufferTimer.C
 		h.mux.Unlock()
 
 		// await next Read call or timer expiration
 		select {
-		case <-h.bufferTimer.C:
+		case <-timerCh:
 			continue
-		case <-h.closed:
+		case <-closedCh:
 			return
 		}
 	}
