@@ -50,7 +50,9 @@ func NewTrackFeedbackEvent(evType TrackEventType, track *Track, playedSeconds fl
 	return &RotorFeedbackEvent{
 		Timestamp:          nowTimestamp(),
 		TotalPlayedSeconds: playedSeconds,
-		TrackLengthSeconds: float64(track.DurationMs) * 1000.0,
+		// DurationMs is milliseconds; this field is seconds (matching the
+		// TotalPlayedSeconds above), so convert by dividing, not multiplying.
+		TrackLengthSeconds: float64(track.DurationMs) / 1000.0,
 		TrackId:            fmt.Sprintf("%s:%d", track.Id, track.Albums[0].Id),
 		Type:               string(evType),
 	}
