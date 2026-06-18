@@ -5,10 +5,10 @@ import (
 
 	"github.com/bogem/id3v2/v2"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/dece2183/yamusic-tui/api"
-	"github.com/dece2183/yamusic-tui/cache"
-	"github.com/dece2183/yamusic-tui/log"
-	"github.com/dece2183/yamusic-tui/ui/components/playlist"
+	"github.com/lillink13/yamusic-tui/api"
+	"github.com/lillink13/yamusic-tui/cache"
+	"github.com/lillink13/yamusic-tui/log"
+	"github.com/lillink13/yamusic-tui/ui/components/playlist"
 )
 
 func (m *Model) cacheCurrentTrack() tea.Cmd {

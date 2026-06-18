@@ -18,7 +18,7 @@ type TrackEventType string
 const (
 	EV_TRACK_STARTED  = TrackEventType(ROTOR_TRACK_STARTED)
 	EV_TRACK_FINISHED = TrackEventType(ROTOR_TRACK_FINISHED)
-	EV_TRACK_SKIPED   = TrackEventType(ROTOR_SKIP)
+	EV_TRACK_SKIPPED  = TrackEventType(ROTOR_SKIP)
 	EV_TRACK_LIKED    = TrackEventType(ROTOR_LIKE)
 	EV_TRACK_UNLIKED  = TrackEventType(ROTOR_UNLIKE)
 )

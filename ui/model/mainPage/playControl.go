@@ -9,14 +9,14 @@ import (
 	_ "image/png"
 
 	"github.com/bogem/id3v2/v2"
-	"github.com/dece2183/yamusic-tui/api"
-	"github.com/dece2183/yamusic-tui/cache"
-	"github.com/dece2183/yamusic-tui/log"
-	"github.com/dece2183/yamusic-tui/stream"
-	"github.com/dece2183/yamusic-tui/ui/components/playlist"
-	"github.com/dece2183/yamusic-tui/ui/components/tracker"
-	"github.com/dece2183/yamusic-tui/ui/components/tracklist"
-	"github.com/dece2183/yamusic-tui/ui/helpers"
+	"github.com/lillink13/yamusic-tui/api"
+	"github.com/lillink13/yamusic-tui/cache"
+	"github.com/lillink13/yamusic-tui/log"
+	"github.com/lillink13/yamusic-tui/stream"
+	"github.com/lillink13/yamusic-tui/ui/components/playlist"
+	"github.com/lillink13/yamusic-tui/ui/components/tracker"
+	"github.com/lillink13/yamusic-tui/ui/components/tracklist"
+	"github.com/lillink13/yamusic-tui/ui/helpers"
 )
 
 const (
@@ -33,7 +33,7 @@ func (m *Model) feedbackOnTrack(batch string) *api.RotorFeedback {
 	if m.tracker.Progress() > _TRACK_FINISHED_THRESHOLD {
 		evType = api.EV_TRACK_FINISHED
 	} else {
-		evType = api.EV_TRACK_SKIPED
+		evType = api.EV_TRACK_SKIPPED
 	}
 	ev := api.NewTrackFeedbackEvent(evType, currTrack, m.tracker.Playtime().Seconds())
 	fb := api.NewFeedback(batch, ev)

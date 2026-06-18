@@ -3,9 +3,9 @@ package tracklist
 import (
 	"strings"
 
-	"github.com/dece2183/yamusic-tui/config"
-	"github.com/dece2183/yamusic-tui/ui/model"
-	"github.com/dece2183/yamusic-tui/ui/style"
+	"github.com/lillink13/yamusic-tui/config"
+	"github.com/lillink13/yamusic-tui/ui/model"
+	"github.com/lillink13/yamusic-tui/ui/style"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"

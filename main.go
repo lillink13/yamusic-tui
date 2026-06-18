@@ -1,14 +1,14 @@
 package main
 
 import (
-	"github.com/dece2183/yamusic-tui/api"
-	"github.com/dece2183/yamusic-tui/config"
-	"github.com/dece2183/yamusic-tui/log"
-	"github.com/dece2183/yamusic-tui/media"
-	"github.com/dece2183/yamusic-tui/ui/model"
-	loginpage "github.com/dece2183/yamusic-tui/ui/model/loginPage"
-	mainpage "github.com/dece2183/yamusic-tui/ui/model/mainPage"
-	"github.com/dece2183/yamusic-tui/ui/style"
+	"github.com/lillink13/yamusic-tui/api"
+	"github.com/lillink13/yamusic-tui/config"
+	"github.com/lillink13/yamusic-tui/log"
+	"github.com/lillink13/yamusic-tui/media"
+	"github.com/lillink13/yamusic-tui/ui/model"
+	loginpage "github.com/lillink13/yamusic-tui/ui/model/loginPage"
+	mainpage "github.com/lillink13/yamusic-tui/ui/model/mainPage"
+	"github.com/lillink13/yamusic-tui/ui/style"
 )
 
 func main() {

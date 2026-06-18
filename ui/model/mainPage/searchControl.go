@@ -5,12 +5,12 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/dece2183/yamusic-tui/api"
-	"github.com/dece2183/yamusic-tui/config"
-	"github.com/dece2183/yamusic-tui/log"
-	"github.com/dece2183/yamusic-tui/ui/components/playlist"
-	"github.com/dece2183/yamusic-tui/ui/components/search"
-	"github.com/dece2183/yamusic-tui/ui/helpers"
+	"github.com/lillink13/yamusic-tui/api"
+	"github.com/lillink13/yamusic-tui/config"
+	"github.com/lillink13/yamusic-tui/log"
+	"github.com/lillink13/yamusic-tui/ui/components/playlist"
+	"github.com/lillink13/yamusic-tui/ui/components/search"
+	"github.com/lillink13/yamusic-tui/ui/helpers"
 )
 
 func (m *Model) searchControl(msg search.Control) tea.Cmd {

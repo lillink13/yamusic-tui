@@ -2,7 +2,7 @@ package style
 
 import (
 	"github.com/charmbracelet/lipgloss"
-	"github.com/dece2183/yamusic-tui/config"
+	"github.com/lillink13/yamusic-tui/config"
 )
 
 var (

@@ -75,7 +75,10 @@ func proccessRequest[RetT any](req *http.Request) (result RetT, invInfo InvocInf
 		}
 
 		dec := json.NewDecoder(resp.Body)
-		dec.Decode(&respBody)
+		if derr := dec.Decode(&respBody); derr != nil && derr != io.EOF {
+			err = fmt.Errorf("failed to decode response body: %w", derr)
+			return
+		}
 
 		invInfo = respBody.InvocationInfo
 		result = respBody.Result
@@ -86,14 +89,20 @@ func proccessRequest[RetT any](req *http.Request) (result RetT, invInfo InvocInf
 		}
 
 		dec := json.NewDecoder(resp.Body)
-		dec.Decode(&respBody)
+		if derr := dec.Decode(&respBody); derr != nil && derr != io.EOF {
+			err = fmt.Errorf("bad request (status %d), failed to decode error body: %w", resp.StatusCode, derr)
+			return
+		}
 
 		invInfo = respBody.InvocationInfo
 		err = respBody.Error
 	case http.StatusUnauthorized:
 		var respBody UnauthorizedError
 		dec := json.NewDecoder(resp.Body)
-		dec.Decode(&respBody)
+		if derr := dec.Decode(&respBody); derr != nil && derr != io.EOF {
+			err = fmt.Errorf("unauthorized (status %d), failed to decode error body: %w", resp.StatusCode, derr)
+			return
+		}
 		err = respBody
 		invInfo.ReqId = respBody.RequestId
 	default:
@@ -245,7 +254,7 @@ func Token(username, password string) (token string, err error) {
 
 	errDesc, ok := respBody["error_description"]
 	if ok {
-		err = fmt.Errorf(errDesc)
+		err = errors.New(errDesc)
 		return
 	}
 
@@ -624,12 +633,19 @@ func parseLRCText(lrcContent string) []LyricPair {
 			continue
 		}
 
-		minutes, _ := strconv.Atoi(timeParts[0])
+		minutes, err := strconv.Atoi(timeParts[0])
+		if err != nil {
+			// not a timestamp line (e.g. "[ar:...]", "[al:...]" metadata) — skip it
+			continue
+		}
 		secondsParts := strings.Split(timeParts[1], ".")
-		seconds, _ := strconv.Atoi(secondsParts[0])
+		seconds, err := strconv.Atoi(secondsParts[0])
+		if err != nil {
+			continue
+		}
 		millis := 0
 		if len(secondsParts) > 1 {
-			millis, _ = strconv.Atoi(secondsParts[1])
+			millis = lrcFractionToMillis(secondsParts[1])
 		}
 
 		totalMs := minutes*60*1000 + seconds*1000 + millis
@@ -637,4 +653,28 @@ func parseLRCText(lrcContent string) []LyricPair {
 	}
 
 	return lyrics
+}
+
+// lrcFractionToMillis converts the fractional-seconds component of an LRC
+// timestamp into milliseconds. LRC timestamps use hundredths of a second by
+// convention ("[mm:ss.xx]"), so "34" means 340ms; some sources use thousandths
+// ("[mm:ss.xxx]"). The value is normalized by its digit count instead of being
+// treated as raw milliseconds (the previous behavior, which desynced lyrics by
+// up to ~1 second).
+func lrcFractionToMillis(frac string) int {
+	if len(frac) > 3 {
+		frac = frac[:3]
+	}
+	value, err := strconv.Atoi(frac)
+	if err != nil {
+		return 0
+	}
+	switch len(frac) {
+	case 1:
+		return value * 100
+	case 2:
+		return value * 10
+	default:
+		return value
+	}
 }

@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/dece2183/yamusic-tui/config"
-	"github.com/dece2183/yamusic-tui/ui/model"
-	"github.com/dece2183/yamusic-tui/ui/style"
+	"github.com/lillink13/yamusic-tui/config"
+	"github.com/lillink13/yamusic-tui/ui/model"
+	"github.com/lillink13/yamusic-tui/ui/style"
 )
 
 type Control uint

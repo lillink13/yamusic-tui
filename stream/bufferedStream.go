@@ -41,7 +41,7 @@ func NewBufferedStream(source io.ReadCloser, totalSize int64) *BufferedStream {
 }
 
 func (h *BufferedStream) Length() int64 {
-	return int64(h.totalSize)
+	return h.totalSize
 }
 
 func (h *BufferedStream) Close() error {

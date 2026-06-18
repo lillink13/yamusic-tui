@@ -86,7 +86,7 @@ type Controls struct {
 	CursorUp    *Key `yaml:"cursor-up"`
 	CursorDown  *Key `yaml:"cursor-down"`
 	Reload      *Key `yaml:"reload"`
-	ShowAllKeys *Key `yaml:"show-all-kyes"`
+	ShowAllKeys *Key `yaml:"show-all-keys"`
 	// Playlists control
 	PlaylistsUp     *Key `yaml:"playlists-up"`
 	PlaylistsDown   *Key `yaml:"playlists-down"`

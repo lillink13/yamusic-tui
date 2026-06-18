@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/bogem/id3v2/v2"
-	"github.com/dece2183/yamusic-tui/api"
+	"github.com/lillink13/yamusic-tui/api"
 )
 
 func ListTracks() ([]api.Track, error) {
@@ -50,7 +50,7 @@ func ListTracks() ([]api.Track, error) {
 				Title:      tag.Title(),
 				Available:  true,
 				FileSize:   int(stat.Size()),
-				DurationMs: int(durationMs),
+				DurationMs: durationMs,
 				Artists:    artists,
 				Albums: []api.Album{
 					{

@@ -12,8 +12,8 @@ import (
 	"github.com/dece2183/media-winrt-go/windows/media"
 	"github.com/dece2183/media-winrt-go/windows/media/playback"
 	"github.com/dece2183/media-winrt-go/windows/storage"
-	"github.com/dece2183/yamusic-tui/media/handler"
 	"github.com/go-ole/go-ole"
+	"github.com/lillink13/yamusic-tui/media/handler"
 )
 
 type PlayState int

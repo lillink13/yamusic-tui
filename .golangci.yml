@@ -1,0 +1,25 @@
+# golangci-lint configuration (v1.x format).
+# Conservative baseline: a focused set of high-signal linters that should stay
+# green on the existing code, to be tightened (errcheck, revive, etc.) as the
+# codebase is cleaned up across the fork roadmap.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - staticcheck
+    - ineffassign
+    - gosimple
+    - misspell
+    - unconvert
+
+linters-settings:
+  misspell:
+    locale: US
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

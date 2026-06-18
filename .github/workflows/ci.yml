@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main, phase0-foundation]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test, vet & gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libasound2-dev
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libasound2-dev
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libasound2-dev
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          go build ./...
+          go build -tags=nomedia ./...
+      # macOS needs the external linker so dyld accepts the binary on macOS 15+.
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          go build -ldflags="-linkmode=external" -o /dev/null .
+          go build -tags=nomedia -o /dev/null .

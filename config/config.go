@@ -56,14 +56,33 @@ func load() (Config, error) {
 		return defaultConfig, err
 	}
 
+	return parseConfig(configContent)
+}
+
+// parseConfig unmarshals YAML config content and backfills defaults for every
+// field the user omitted. It is split out from load() so the merge logic can be
+// unit-tested without touching the filesystem.
+func parseConfig(content []byte) (Config, error) {
 	var newConfig Config
-	err = yaml.Unmarshal(configContent, &newConfig)
+	err := yaml.Unmarshal(content, &newConfig)
 	if err != nil {
 		return defaultConfig, err
 	}
 
+	// Top-level scalar defaults. A partial config (e.g. one written by an older
+	// version that lacked these keys) must not silently end up muted, with a
+	// zero playback buffer, or with no rewind step.
+	if newConfig.Volume == 0 {
+		newConfig.Volume = defaultConfig.Volume
+	}
 	if newConfig.VolumeStep == 0 {
 		newConfig.VolumeStep = defaultConfig.VolumeStep
+	}
+	if newConfig.BufferSize == 0 {
+		newConfig.BufferSize = defaultConfig.BufferSize
+	}
+	if newConfig.RewindDuration == 0 {
+		newConfig.RewindDuration = defaultConfig.RewindDuration
 	}
 
 	if newConfig.Search == nil {
@@ -75,6 +94,19 @@ func load() (Config, error) {
 		controls := *defaultConfig.Controls
 		newConfig.Controls = &controls
 	} else {
+		// Backward compatibility: older versions persisted the "show all keys"
+		// control under a misspelled key ("show-all-kyes"). Honor it when the
+		// corrected key is absent, before defaults are filled in.
+		if newConfig.Controls.ShowAllKeys == nil {
+			var legacy struct {
+				Controls struct {
+					ShowAllKeys *Key `yaml:"show-all-kyes"`
+				} `yaml:"controls"`
+			}
+			if yaml.Unmarshal(content, &legacy) == nil && legacy.Controls.ShowAllKeys != nil {
+				newConfig.Controls.ShowAllKeys = legacy.Controls.ShowAllKeys
+			}
+		}
 		fillDefault(newConfig.Controls, defaultConfig.Controls)
 		if newConfig.Controls.Quit.IsEmpty() {
 			newConfig.Controls.Quit = defaultConfig.Controls.Quit

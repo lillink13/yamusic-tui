@@ -5,7 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/dece2183/yamusic-tui/ui/style"
+	"github.com/lillink13/yamusic-tui/ui/style"
 )
 
 type Model interface {

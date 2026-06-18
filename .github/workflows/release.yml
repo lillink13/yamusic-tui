@@ -8,78 +8,69 @@ on:
     types: [published]
 
 jobs:
-  build:
-    name: Release binaries
+  # Pack a vendored-deps tarball alongside the release for reproducible builds.
+  vendor:
+    name: Vendor archive
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    - name: Install build dependencies
-      run: sudo apt install -y libx11-dev libasound2-dev
-    - name: Setup Go
-      uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Vendor dependencies
+        run: go mod vendor
+      - name: Pack vendor dir
+        run: tar -czf yamusic-tui-vendor.tar.gz ./vendor
+      - name: Upload vendor archive
+        uses: svenstaro/upload-release-action@v2
+        with:
+          file: yamusic-tui-vendor.tar.gz
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref }}
+          overwrite: true
 
-    - name: Download dependencies
-      run: go mod vendor
-    - name: Pack vendor dir
-      run: tar -czf yamusic-tui-vendor.tar.gz ./vendor
-    - name: Upload vendor archive
-      uses: svenstaro/upload-release-action@v2
-      with:
-        file: yamusic-tui-vendor.tar.gz
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ github.ref }}
-        overwrite: true
-
-    - name: Build linux-amd64
-      run: go build -trimpath -ldflags="-w -s" -o yamusic
-      env:
-        GOOS: linux
-        GOARCH: amd64
-    - name: Upload linux-amd64
-      uses: svenstaro/upload-release-action@v2
-      with:
-        file: yamusic
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ github.ref }}
-        overwrite: true
-
-    - name: Build linux-amd64-nomedia
-      run: go build -trimpath -ldflags="-w -s" -tags=nomedia -o yamusic-nomedia
-      env:
-        GOOS: linux
-        GOARCH: amd64
-    - name: Upload linux-amd64-nomedia
-      uses: svenstaro/upload-release-action@v2
-      with:
-        file: yamusic-nomedia
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ github.ref }}
-        overwrite: true
-
-    - name: Build windows-amd64
-      run: go build -trimpath -ldflags="-w -s" -o yamusic.exe
-      env:
-        GOOS: windows
-        GOARCH: amd64
-    - name: Upload windows-amd64
-      uses: svenstaro/upload-release-action@v2
-      with:
-        file: yamusic.exe
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ github.ref }}
-        overwrite: true
-
-    - name: Build windows-amd64-nomedia
-      run: go build -trimpath -ldflags="-w -s" -tags=nomedia -o yamusic-nomedia.exe
-      env:
-        GOOS: windows
-        GOARCH: amd64
-    - name: Upload windows-amd64
-      uses: svenstaro/upload-release-action@v2
-      with:
-        file: yamusic-nomedia.exe
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        tag: ${{ github.ref }}
-        overwrite: true
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - { runner: ubuntu-latest,    goos: linux,   goarch: amd64, tags: '',        ldextra: '',                   asset: yamusic-tui-linux-amd64 }
+          - { runner: ubuntu-latest,    goos: linux,   goarch: amd64, tags: nomedia,   ldextra: '',                   asset: yamusic-tui-linux-amd64-nomedia }
+          # Linux arm64 (native arm runner — free for public repos)
+          - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64, tags: '',        ldextra: '',                   asset: yamusic-tui-linux-arm64 }
+          - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64, tags: nomedia,   ldextra: '',                   asset: yamusic-tui-linux-arm64-nomedia }
+          # macOS — external linker required so dyld accepts the binary on macOS 15+.
+          # amd64 is cross-compiled from the arm64 runner (universal SDK + clang -arch).
+          - { runner: macos-latest,     goos: darwin,  goarch: arm64, tags: '',        ldextra: ' -linkmode=external', asset: yamusic-tui-darwin-arm64 }
+          - { runner: macos-latest,     goos: darwin,  goarch: amd64, tags: '',        ldextra: ' -linkmode=external', asset: yamusic-tui-darwin-amd64 }
+          # Windows x86_64 (best-effort; ~1% of users)
+          - { runner: windows-latest,   goos: windows, goarch: amd64, tags: '',        ldextra: '',                   asset: yamusic-tui-windows-amd64.exe }
+          - { runner: windows-latest,   goos: windows, goarch: amd64, tags: nomedia,   ldextra: '',                   asset: yamusic-tui-windows-amd64-nomedia.exe }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libasound2-dev
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '1'
+        shell: bash
+        run: |
+          tagflag=""
+          if [ -n "${{ matrix.tags }}" ]; then tagflag="-tags=${{ matrix.tags }}"; fi
+          go build -trimpath -ldflags="-w -s${{ matrix.ldextra }}" $tagflag -o ${{ matrix.asset }} .
+      - name: Upload ${{ matrix.asset }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          file: ${{ matrix.asset }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref }}
+          overwrite: true
