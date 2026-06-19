@@ -174,27 +174,72 @@ func buildSearchItems(client *api.YaMusicClient, res api.SearchResult) []*playli
 
 // insertSearchResults splices the freshly built search items into the sidebar
 // under a "search results:" header, replacing any previous search section, and
-// moves the cursor onto the first result.
+// moves the cursor onto the first result. With no results it drops any stale
+// section and reports back instead of selecting a non-existent item.
 func (m *Model) insertSearchResults(items []*playlist.Item) tea.Cmd {
 	playlists := m.playlists.Items()
-	searchResIndex := len(playlists) + 2
+
+	// Capture the currently-playing item so its absolute index can be re-resolved
+	// after the list is rebuilt (SetItems reindexes everything).
+	var playing *playlist.Item
+	if m.currentPlaylistIndex >= 0 && m.currentPlaylistIndex < len(playlists) {
+		playing = playlists[m.currentPlaylistIndex]
+	}
+
+	// Drop any previous search section (its spacer + "search results:" header +
+	// the old result items) so a new search replaces it.
+	base := playlists
 	for i, pl := range playlists {
 		if !pl.Active && !pl.Subitem && pl.Name == "search results:" {
-			playlists = playlists[:i-1]
-			searchResIndex = i + 1
+			base = playlists[:i-1]
 			break
 		}
 	}
 
-	playlists = append(playlists,
-		&playlist.Item{Name: "", Kind: playlist.NONE, Active: false, Subitem: false},
-		&playlist.Item{Name: "search results:", Kind: playlist.NONE, Active: false, Subitem: false},
-	)
-	playlists = append(playlists, items...)
+	var newItems []*playlist.Item
+	var selectIdx int
+	if len(items) == 0 {
+		// Nothing found: keep the sidebar without a dangling empty section (an
+		// out-of-range selection would crash on the nil selected item) and tell
+		// the user. Keep the cursor on a valid row.
+		newItems = base
+		selectIdx = m.playlists.Index()
+		if selectIdx >= len(base) {
+			selectIdx = len(base) - 1
+		}
+		m.tracker.ShowError("nothing found")
+	} else {
+		newItems = make([]*playlist.Item, 0, len(base)+2+len(items))
+		newItems = append(newItems, base...)
+		newItems = append(newItems,
+			&playlist.Item{Name: "", Kind: playlist.NONE, Active: false, Subitem: false},
+			&playlist.Item{Name: "search results:", Kind: playlist.NONE, Active: false, Subitem: false},
+		)
+		newItems = append(newItems, items...)
+		selectIdx = len(base) + 2 // spacer + header, first result follows
+	}
 
-	cmd := m.playlists.SetItems(playlists)
-	m.playlists.Select(searchResIndex)
-	m.Send(playlist.CURSOR_DOWN)
+	cmd := m.playlists.SetItems(newItems)
+
+	// Re-resolve the playing playlist's index after the rebuild; if the played
+	// item was a previous search result that got dropped, mark none playing.
+	if playing != nil {
+		m.currentPlaylistIndex = -1
+		for i, it := range m.playlists.Items() {
+			if it == playing {
+				m.currentPlaylistIndex = i
+				break
+			}
+		}
+	}
+
+	if selectIdx < 0 {
+		selectIdx = 0
+	}
+	m.playlists.Select(selectIdx)
+	if len(items) > 0 {
+		m.Send(playlist.CURSOR_DOWN)
+	}
 
 	return cmd
 }
