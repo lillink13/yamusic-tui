@@ -302,6 +302,25 @@ type LikesDesc struct {
 	} `json:"library"`
 }
 
+// The /users/{uid}/likes/{playlists,artists,albums} endpoints each return a bare
+// array of these wrapper objects (the liked entity nested under its type key).
+type (
+	likedPlaylist struct {
+		Playlist Playlist `json:"playlist"`
+	}
+	likedArtist struct {
+		Artist Artist `json:"artist"`
+	}
+	likedAlbum struct {
+		Album Album `json:"album"`
+	}
+)
+
+// artistTracksPage is the /artists/{id}/tracks response: a page of full tracks.
+type artistTracksPage struct {
+	Tracks []Track `json:"tracks"`
+}
+
 type TrackDownloadInfo struct {
 	Codec           string `json:"codec"`
 	Gain            bool   `json:"gain"`

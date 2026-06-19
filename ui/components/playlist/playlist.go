@@ -34,6 +34,27 @@ const (
 	USER
 )
 
+// SectionId tags a sidebar item with the collapsible section it belongs to.
+// Built-in entries and the user's own playlists are SectionNone; the lazily
+// loaded collections (radio stations, liked playlists / artists / albums) each
+// live in their own foldable section at the bottom of the sidebar.
+type SectionId = uint8
+
+const (
+	SectionNone SectionId = iota
+	SectionStations
+	SectionLikedPlaylists
+	SectionLikedArtists
+	SectionLikedAlbums
+)
+
+// IsLikedSection reports whether a section holds liked playlists/artists/albums
+// (read-only collections whose tracks are fetched lazily on first play), as
+// opposed to the user's own playlists or the radio stations.
+func IsLikedSection(s SectionId) bool {
+	return s == SectionLikedPlaylists || s == SectionLikedArtists || s == SectionLikedAlbums
+}
+
 var defaultPlaylists = []list.Item{
 	&Item{Name: "my wave", Kind: MYWAVE, Active: true, Subitem: false, Rotor: true},
 	&Item{Name: "likes", Kind: LIKES, Active: true, Subitem: false},

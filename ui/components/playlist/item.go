@@ -3,7 +3,7 @@ package playlist
 import "github.com/lillink13/yamusic-tui/api"
 
 type Item struct {
-	Uid uint64
+	Uid uint64 // owner uid for a liked (foreign) playlist; unused otherwise
 
 	Name         string
 	Kind         uint64
@@ -14,8 +14,10 @@ type Item struct {
 	Active       bool
 	Subitem      bool
 	Rotor        bool
-	Collapsible  bool // a section header that folds the items below it
-	Collapsed    bool
+	Collapsible  bool      // a section header that folds the items below it
+	Collapsed    bool      //
+	Section      SectionId // which collapsible section this item belongs to
+	ResId        uint64    // liked-collection resource id: playlist kind / album id / artist id
 
 	Tracks        []api.Track
 	CurrentTrack  int
@@ -28,10 +30,17 @@ func (i *Item) FilterValue() string {
 
 func (i *Item) IsSame(other *Item) bool {
 	// Stations all share Kind==STATION and may have duplicate display names, so
-	// identify them by StationId; everything else has a unique Kind+Name.
+	// identify them by StationId.
 	if i.Kind == STATION || other.Kind == STATION {
 		return i.Kind == other.Kind && i.StationId == other.StationId
 	}
+	// Liked playlists/artists/albums all carry Kind==NONE and may share display
+	// names too, so identify them by their section + resource id (owner uid plus
+	// the playlist kind / album id / artist id).
+	if i.Section != SectionNone || other.Section != SectionNone {
+		return i.Section == other.Section && i.Uid == other.Uid && i.ResId == other.ResId
+	}
+	// Everything else (built-ins, the user's own playlists) has a unique Kind+Name.
 	return i.Kind == other.Kind && i.Name == other.Name
 }
 

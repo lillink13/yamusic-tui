@@ -515,6 +515,65 @@ func (client *YaMusicClient) LikedTracks() (tracks []LikeTrackInfo, err error) {
 	return
 }
 
+// LikedPlaylists returns the playlists (owned by anyone) that the user has
+// liked. GET /users/{uid}/likes/playlists yields a bare array of { playlist }.
+func (client *YaMusicClient) LikedPlaylists() (playlists []Playlist, err error) {
+	items, _, err := getRequest[[]likedPlaylist](client.token, fmt.Sprintf("/users/%d/likes/playlists", client.userid), nil)
+	if err != nil {
+		return
+	}
+	playlists = make([]Playlist, 0, len(items))
+	for i := range items {
+		playlists = append(playlists, items[i].Playlist)
+	}
+	return
+}
+
+// LikedArtists returns the artists the user has liked. GET
+// /users/{uid}/likes/artists with with-timestamps yields a bare array of
+// { artist, timestamp }.
+func (client *YaMusicClient) LikedArtists() (artists []Artist, err error) {
+	items, _, err := getRequest[[]likedArtist](client.token, fmt.Sprintf("/users/%d/likes/artists", client.userid), url.Values{"with-timestamps": {"true"}})
+	if err != nil {
+		return
+	}
+	artists = make([]Artist, 0, len(items))
+	for i := range items {
+		if items[i].Artist.Id == 0 {
+			continue
+		}
+		artists = append(artists, items[i].Artist)
+	}
+	return
+}
+
+// LikedAlbums returns the albums the user has liked. GET
+// /users/{uid}/likes/albums with rich yields a bare array of { id, album }.
+func (client *YaMusicClient) LikedAlbums() (albums []Album, err error) {
+	items, _, err := getRequest[[]likedAlbum](client.token, fmt.Sprintf("/users/%d/likes/albums", client.userid), url.Values{"rich": {"true"}})
+	if err != nil {
+		return
+	}
+	albums = make([]Album, 0, len(items))
+	for i := range items {
+		albums = append(albums, items[i].Album)
+	}
+	return
+}
+
+// ArtistTracksFull returns a page of an artist's full tracks (unlike ArtistTracks
+// / ArtistPopularTracks, which return only ids). GET /artists/{id}/tracks.
+func (client *YaMusicClient) ArtistTracksFull(artistId uint64, page, pageSize int) (tracks []Track, err error) {
+	res, _, err := getRequest[artistTracksPage](client.token,
+		fmt.Sprintf("/artists/%d/tracks", artistId),
+		url.Values{"page": {fmt.Sprint(page)}, "page-size": {fmt.Sprint(pageSize)}},
+	)
+	if err != nil {
+		return
+	}
+	return res.Tracks, nil
+}
+
 func (client *YaMusicClient) LikeTrack(trackId string) (err error) {
 	_, _, err = postRequest[interface{}](client.token, fmt.Sprintf("/users/%d/likes/tracks/add-multiple", client.userid), url.Values{"track-ids": {trackId}})
 	return

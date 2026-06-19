@@ -27,19 +27,27 @@ import (
 	"github.com/dece2183/go-clipboard"
 )
 
+// _LIKED_ARTIST_TRACK_LIMIT caps how many of a liked artist's top tracks are
+// loaded when the artist is first played (track-ids-by-rating can return a very
+// long tail for prolific artists).
+const _LIKED_ARTIST_TRACK_LIMIT = 100
+
 // dataLoadedMsg carries everything fetched by the background load command so it
 // can be applied to the model inside Update (on the Bubble Tea goroutine)
 // instead of being mutated directly from a background goroutine.
 type dataLoadedMsg struct {
-	client        *api.YaMusicClient
-	wave          *api.StationTracks
-	likedTracks   []api.Track
-	likedIds      map[string]bool
-	cachedTracks  []api.Track
-	cachedIds     map[string]bool
-	userPlaylists []*playlist.Item
-	stations      []*playlist.Item
-	errLabel      string
+	client         *api.YaMusicClient
+	wave           *api.StationTracks
+	likedTracks    []api.Track
+	likedIds       map[string]bool
+	cachedTracks   []api.Track
+	cachedIds      map[string]bool
+	userPlaylists  []*playlist.Item
+	stations       []*playlist.Item
+	likedPlaylists []*playlist.Item
+	likedArtists   []*playlist.Item
+	likedAlbums    []*playlist.Item
+	errLabel       string
 }
 
 // stationStartedMsg carries the result of lazily starting a radio station's
@@ -49,6 +57,26 @@ type stationStartedMsg struct {
 	stationId api.StationId
 	tracks    api.StationTracks
 	err       error
+}
+
+// collectionKey uniquely identifies a liked playlist/artist/album across the
+// backing stores (the resource id is a playlist kind, album id or artist id; the
+// owner uid disambiguates foreign playlists that may share a kind).
+type collectionKey struct {
+	section playlist.SectionId
+	uid     uint64
+	resId   uint64
+}
+
+// collectionLoadedMsg carries the result of lazily fetching a liked collection's
+// tracks (done on first play, like radio stations — fetching every collection's
+// tracks at load time would be many requests).
+type collectionLoadedMsg struct {
+	section playlist.SectionId
+	uid     uint64
+	resId   uint64
+	tracks  []api.Track
+	err     error
 }
 
 // mediaSnapshot is a small, mutex-guarded view of the player state that the
@@ -97,9 +125,12 @@ type Model struct {
 	currentPlaylistIndex int
 	likedTracksMap       map[string]bool
 	cachedTracksMap      map[string]bool
-	stations             []*playlist.Item
-	stationsCollapsed    bool
-	startingStations     map[api.StationId]bool
+	// Backing stores for the collapsible bottom sections (stations, liked
+	// playlists/artists/albums), keyed by section id. The sidebar list only holds
+	// the currently-visible items; these keep the full set for re-expansion.
+	sectionItems       map[playlist.SectionId][]*playlist.Item
+	startingStations   map[api.StationId]bool
+	loadingCollections map[collectionKey]bool
 
 	mediaMu   sync.RWMutex
 	mediaSnap mediaSnapshot
@@ -115,7 +146,9 @@ func New(mediaHandler handler.MediaHandler) *Model {
 	m.mediaHandler = mediaHandler
 	m.likedTracksMap = make(map[string]bool)
 	m.cachedTracksMap = make(map[string]bool)
+	m.sectionItems = make(map[playlist.SectionId][]*playlist.Item)
 	m.startingStations = make(map[api.StationId]bool)
+	m.loadingCollections = make(map[collectionKey]bool)
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.Points))
 	m.playlists = playlist.New(m.program, "YaMusic")
 	m.tracklist = tracklist.New(m.program, &m.likedTracksMap, &m.cachedTracksMap)
@@ -170,6 +203,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	case stationStartedMsg:
 		m.applyStationStarted(msg)
+
+	case collectionLoadedMsg:
+		m.applyCollectionLoaded(msg)
 
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
@@ -245,7 +281,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case tracklist.PLAY:
 			playlistItem := m.playlists.SelectedItem()
 			if playlistItem.Collapsible {
-				m.setStationsCollapsed(!playlistItem.Collapsed)
+				m.setSectionCollapsed(playlistItem.Section, !playlistItem.Collapsed)
 				break
 			}
 			if !playlistItem.Active {
@@ -258,6 +294,17 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.startingStations[playlistItem.StationId] {
 					m.startingStations[playlistItem.StationId] = true
 					cmds = append(cmds, m.startStation(playlistItem.StationId))
+				}
+				break
+			}
+			if playlist.IsLikedSection(playlistItem.Section) && len(playlistItem.Tracks) == 0 {
+				// First play of a liked playlist/artist/album — fetch its tracks
+				// lazily, then collectionLoadedMsg fills them and plays. Guard
+				// against repeated presses spawning duplicate fetches.
+				key := collectionKey{section: playlistItem.Section, uid: playlistItem.Uid, resId: playlistItem.ResId}
+				if !m.loadingCollections[key] {
+					m.loadingCollections[key] = true
+					cmds = append(cmds, m.loadCollection(playlistItem))
 				}
 				break
 			}
@@ -558,6 +605,62 @@ func (m *Model) loadData() tea.Msg {
 		}
 	}
 
+	// Liked playlists / artists / albums. Only the lists are fetched here; each
+	// collection's tracks are loaded lazily on first play (fetching all of them
+	// up front would be many requests). They are read-only, so they carry
+	// Kind==NONE (never renamable/editable) and identify their source via Uid
+	// (owner) + ResId (playlist kind / artist id / album id).
+	if liked, err := client.LikedPlaylists(); err != nil {
+		log.Print(log.LVL_ERROR, "failed to obtain liked playlists: %s", err)
+		result.errLabel = "liked playlists"
+	} else {
+		for i := range liked {
+			pl := liked[i]
+			owner := pl.Owner.Uid
+			if owner == 0 {
+				owner = pl.Uid
+			}
+			result.likedPlaylists = append(result.likedPlaylists, &playlist.Item{
+				Name:    pl.Title,
+				Kind:    playlist.NONE,
+				Active:  true,
+				Subitem: true,
+				Uid:     owner,
+				ResId:   pl.Kind,
+			})
+		}
+	}
+
+	if liked, err := client.LikedArtists(); err != nil {
+		log.Print(log.LVL_ERROR, "failed to obtain liked artists: %s", err)
+		result.errLabel = "liked artists"
+	} else {
+		for i := range liked {
+			result.likedArtists = append(result.likedArtists, &playlist.Item{
+				Name:    liked[i].Name,
+				Kind:    playlist.NONE,
+				Active:  true,
+				Subitem: true,
+				ResId:   liked[i].Id,
+			})
+		}
+	}
+
+	if liked, err := client.LikedAlbums(); err != nil {
+		log.Print(log.LVL_ERROR, "failed to obtain liked albums: %s", err)
+		result.errLabel = "liked albums"
+	} else {
+		for i := range liked {
+			result.likedAlbums = append(result.likedAlbums, &playlist.Item{
+				Name:    liked[i].Title,
+				Kind:    playlist.NONE,
+				Active:  true,
+				Subitem: true,
+				ResId:   liked[i].Id,
+			})
+		}
+	}
+
 	return result
 }
 
@@ -583,6 +686,16 @@ func stationLanguage() string {
 // Update, so every mutation here happens on the Bubble Tea goroutine.
 func (m *Model) applyLoadedData(data dataLoadedMsg) {
 	m.client = data.client
+
+	// Reset the per-load state. This also runs on Reload, which rebuilds the
+	// sidebar from scratch: clearing these stops a stale section store (orphaned
+	// *Item pointers from the previous load) and stops in-flight lazy-load /
+	// station-start guards from blocking the freshly rebuilt items. A request
+	// that was in flight across the reload still resolves harmlessly — it is
+	// looked up by id against the new section store, or finds nothing.
+	m.sectionItems = make(map[playlist.SectionId][]*playlist.Item)
+	m.startingStations = make(map[api.StationId]bool)
+	m.loadingCollections = make(map[collectionKey]bool)
 
 	if data.likedIds != nil {
 		m.likedTracksMap = data.likedIds
@@ -625,21 +738,15 @@ func (m *Model) applyLoadedData(data dataLoadedMsg) {
 		m.playlists.InsertItem(-1, pl)
 	}
 
-	// Radio stations live in a collapsible section at the very bottom: there are
-	// many of them, so they must not push the user's playlists down. Collapsed by
-	// default — the header expands/collapses them.
-	m.stations = data.stations
-	m.stationsCollapsed = true
-	if len(m.stations) > 0 {
-		m.playlists.InsertItem(-1, &playlist.Item{Name: "", Kind: playlist.NONE})
-		m.playlists.InsertItem(-1, &playlist.Item{
-			Name:        "stations",
-			Kind:        playlist.NONE,
-			Active:      true,
-			Collapsible: true,
-			Collapsed:   true,
-		})
-	}
+	// Liked collections and radio stations live in collapsible sections at the
+	// bottom: there can be many of them, so they must not push the user's own
+	// playlists down. Each is collapsed by default — its header expands/collapses
+	// it — and its tracks are fetched lazily on first play. The liked collections
+	// (curated content) sit above the radio stations (of which there are the most).
+	m.appendCollapsibleSection(playlist.SectionLikedPlaylists, "liked playlists", data.likedPlaylists)
+	m.appendCollapsibleSection(playlist.SectionLikedAlbums, "liked albums", data.likedAlbums)
+	m.appendCollapsibleSection(playlist.SectionLikedArtists, "liked artists", data.likedArtists)
+	m.appendCollapsibleSection(playlist.SectionStations, "stations", data.stations)
 
 	m.currentPlaylistIndex = -1
 	m.playlists.Select(0)
@@ -685,7 +792,7 @@ func (m *Model) applyStationStarted(msg stationStartedMsg) {
 	}
 
 	var st *playlist.Item
-	for _, s := range m.stations {
+	for _, s := range m.sectionItems[playlist.SectionStations] {
 		if s.StationId == msg.stationId {
 			st = s
 			break
@@ -708,22 +815,51 @@ func (m *Model) applyStationStarted(msg stationStartedMsg) {
 	}
 }
 
-// setStationsCollapsed folds or unfolds the stations section. Stations are the
-// last section, so it just rebuilds everything after the header. A station that
-// is currently playing stays visible even when collapsed, so currentPlaylistIndex
-// (index-based) keeps resolving and playback continues.
-func (m *Model) setStationsCollapsed(collapsed bool) {
-	m.stationsCollapsed = collapsed
+// appendCollapsibleSection adds a foldable section (a spacer, then a header) to
+// the bottom of the sidebar, backed by items. The items are tagged with the
+// section id and kept in m.sectionItems for re-expansion; nothing is added for an
+// empty section.
+func (m *Model) appendCollapsibleSection(section playlist.SectionId, title string, items []*playlist.Item) {
+	if len(items) == 0 {
+		return
+	}
+	for _, it := range items {
+		it.Section = section
+	}
+	m.sectionItems[section] = items
+	m.playlists.InsertItem(-1, &playlist.Item{Name: "", Kind: playlist.NONE, Section: playlist.SectionNone})
+	m.playlists.InsertItem(-1, &playlist.Item{
+		Name:        title,
+		Kind:        playlist.NONE,
+		Section:     section,
+		Active:      true,
+		Collapsible: true,
+		Collapsed:   true,
+	})
+}
+
+// setSectionCollapsed folds or unfolds one collapsible section, identified by id.
+// A section's visible children are the contiguous run of items tagged with its
+// id right after its header (bounded by the next section's spacer/header, which
+// carry a different section id), so only that run is rebuilt — the other sections
+// are left untouched. An item from this section that is currently playing stays
+// visible even when collapsed, so currentPlaylistIndex (index-based) keeps
+// resolving and playback continues.
+func (m *Model) setSectionCollapsed(section playlist.SectionId, collapsed bool) {
+	items, ok := m.sectionItems[section]
+	if !ok {
+		return
+	}
 
 	var playing *playlist.Item
 	if m.currentPlaylistIndex >= 0 && m.currentPlaylistIndex < len(m.playlists.Items()) {
 		playing = m.playlists.Items()[m.currentPlaylistIndex]
 	}
 
-	items := m.playlists.Items()
+	list := m.playlists.Items()
 	headerIdx := -1
-	for i := range items {
-		if items[i].Collapsible {
+	for i := range list {
+		if list[i].Collapsible && list[i].Section == section {
 			headerIdx = i
 			break
 		}
@@ -731,23 +867,29 @@ func (m *Model) setStationsCollapsed(collapsed bool) {
 	if headerIdx < 0 {
 		return
 	}
-	items[headerIdx].Collapsed = collapsed
-	m.playlists.SetItem(headerIdx, items[headerIdx])
+	list[headerIdx].Collapsed = collapsed
+	m.playlists.SetItem(headerIdx, list[headerIdx])
 
-	// Drop every station currently under the header.
-	for len(m.playlists.Items()) > headerIdx+1 {
+	// Drop this section's currently-shown children only (items tagged with this
+	// section right after the header). The next section's spacer/header has a
+	// different section id and stops the loop.
+	for headerIdx+1 < len(m.playlists.Items()) {
+		next := m.playlists.Items()[headerIdx+1]
+		if next.Section != section || next.Collapsible {
+			break
+		}
 		m.playlists.RemoveItem(headerIdx + 1)
 	}
 
 	insertIdx := headerIdx + 1
 	if collapsed {
-		// Keep only the playing station visible, so its index stays resolvable.
-		if playing != nil && playing.Kind == playlist.STATION {
+		// Keep a playing item from this section visible, so its index stays resolvable.
+		if playing != nil && playing.Section == section && !playing.Collapsible {
 			m.playlists.InsertItem(insertIdx, playing)
 		}
 	} else {
-		for _, st := range m.stations {
-			m.playlists.InsertItem(insertIdx, st)
+		for _, it := range items {
+			m.playlists.InsertItem(insertIdx, it)
 			insertIdx++
 		}
 	}
@@ -764,6 +906,80 @@ func (m *Model) setStationsCollapsed(collapsed bool) {
 
 	m.playlists.Select(headerIdx)
 	m.displayPlaylist(m.playlists.SelectedItem())
+}
+
+// loadCollection fetches the tracks of a liked playlist/artist/album (network
+// I/O, so it runs as a Cmd) and reports back via collectionLoadedMsg. The fetch
+// differs per section: a foreign playlist by (kind, owner uid), an album by its
+// id (its volumes flattened), an artist by its top tracks (ids resolved to full
+// tracks).
+func (m *Model) loadCollection(it *playlist.Item) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	client := m.client
+	section, uid, resId := it.Section, it.Uid, it.ResId
+	return func() tea.Msg {
+		var (
+			tracks []api.Track
+			err    error
+		)
+		switch section {
+		case playlist.SectionLikedPlaylists:
+			tracks, err = client.PlaylistTracks(resId, uid, false)
+		case playlist.SectionLikedAlbums:
+			var album api.Album
+			album, err = client.Album(resId, true)
+			if err == nil {
+				for _, vol := range album.Volumes {
+					tracks = append(tracks, vol...)
+				}
+			}
+		case playlist.SectionLikedArtists:
+			tracks, err = client.ArtistTracksFull(resId, 0, _LIKED_ARTIST_TRACK_LIMIT)
+		}
+		return collectionLoadedMsg{section: section, uid: uid, resId: resId, tracks: tracks, err: err}
+	}
+}
+
+// applyCollectionLoaded fills a liked collection with its freshly fetched tracks
+// and, if the user is still on it, plays it. Runs inside Update. The item is
+// found by (section, owner uid, resource id), since its sidebar index may have
+// shifted or it may even be collapsed away.
+func (m *Model) applyCollectionLoaded(msg collectionLoadedMsg) {
+	// The fetch is complete (success or not) — allow a retry if needed.
+	delete(m.loadingCollections, collectionKey{section: msg.section, uid: msg.uid, resId: msg.resId})
+
+	if msg.err != nil {
+		log.Print(log.LVL_ERROR, "failed to load liked collection: %s", msg.err)
+		m.tracker.ShowError("collection load")
+		return
+	}
+	if len(msg.tracks) == 0 {
+		m.tracker.ShowError("empty collection")
+		return
+	}
+
+	var it *playlist.Item
+	for _, c := range m.sectionItems[msg.section] {
+		if c.Uid == msg.uid && c.ResId == msg.resId {
+			it = c
+			break
+		}
+	}
+	if it == nil {
+		return
+	}
+
+	it.Tracks = msg.tracks
+	it.CurrentTrack = 0
+	it.SelectedTrack = 0
+
+	// Only auto-play if the user is still pointing at this collection (same pointer).
+	if m.playlists.SelectedItem() == it {
+		m.displayPlaylist(it)
+		m.playSelectedPlaylist(0)
+	}
 }
 
 func (m *Model) mediaHandle() {

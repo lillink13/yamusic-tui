@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"slices"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lillink13/yamusic-tui/api"
@@ -260,9 +261,9 @@ func (m *Model) displayPlaylist(pl *playlist.Item) {
 	switch {
 	case pl.Collapsible:
 		if pl.Collapsed {
-			m.tracklist.Title = "Stations (press enter to expand)"
+			m.tracklist.Title = capitalize(pl.Name) + " (press enter to expand)"
 		} else {
-			m.tracklist.Title = "Stations (press enter to collapse)"
+			m.tracklist.Title = capitalize(pl.Name) + " (press enter to collapse)"
 		}
 	case pl.Kind == playlist.MYWAVE:
 		m.tracklist.Title = "My wave"
@@ -270,9 +271,23 @@ func (m *Model) displayPlaylist(pl *playlist.Item) {
 		m.tracklist.Title = "Liked tracks"
 	case pl.Kind == playlist.LOCAL:
 		m.tracklist.Title = "Cached tracks"
+	case playlist.IsLikedSection(pl.Section) && len(pl.Tracks) == 0:
+		// A liked collection whose tracks aren't loaded yet — hint at the action.
+		m.tracklist.Title = pl.Name + " (press enter to play)"
 	default:
 		m.tracklist.Title = "Tracks from " + pl.Name
 	}
+}
+
+// capitalize upper-cases the first rune of s (the sidebar uses lowercase section
+// names, but the tracklist title reads better capitalized).
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
 
 func (m *Model) indicateCurrentTrackPlaying(playing bool) {
