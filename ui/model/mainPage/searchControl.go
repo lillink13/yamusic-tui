@@ -18,8 +18,16 @@ func (m *Model) searchControl(msg search.Control) tea.Cmd {
 	case search.SELECT:
 		m.isSearchActive = false
 
+		// Prefer the highlighted suggestion, but fall back to the raw typed text so
+		// search still works when the suggestion list never populated (the suggest
+		// timer only ticks off background messages, so with nothing playing it may
+		// stay empty — the component leaves the input intact in that case).
 		req, ok := m.searchDialog.SuggestionValue()
 		if !ok {
+			req = m.searchDialog.InputValue()
+		}
+		req = strings.TrimSpace(req)
+		if req == "" {
 			return nil
 		}
 
