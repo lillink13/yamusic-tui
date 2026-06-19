@@ -53,7 +53,27 @@ func prepareToProccess(key string) []string {
 	s = strings.ReplaceAll(s, "↓", "down")
 	s = strings.ReplaceAll(s, "←", "left")
 	s = strings.ReplaceAll(s, "→", "right")
-	return strings.Split(s, ",")
+	tokens := strings.Split(s, ",")
+	for i := range tokens {
+		tokens[i] = normalizeShiftLetter(tokens[i])
+	}
+	return tokens
+}
+
+// normalizeShiftLetter rewrites a "shift+<letter>" binding to its uppercase
+// letter (e.g. "shift+f" -> "F"). Terminals deliver a shifted letter as the
+// uppercase rune, not as a "shift+" modifier event, so a literal "shift+f"
+// binding would never match. Other shifted keys ("shift+up", …) and multi-rune
+// tokens are left untouched.
+func normalizeShiftLetter(token string) string {
+	rest, ok := strings.CutPrefix(token, "shift+")
+	if !ok || len(rest) != 1 {
+		return token
+	}
+	if c := rest[0]; c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+		return strings.ToUpper(rest)
+	}
+	return token
 }
 
 func prepareToDisplay(key string) string {

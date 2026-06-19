@@ -2,6 +2,44 @@ package config
 
 import "testing"
 
+func TestKeyShiftLetterMatchesUppercase(t *testing.T) {
+	// A "shift+<letter>" binding must match the uppercase rune the terminal
+	// actually delivers (Shift+F arrives as "F", not "shift+f").
+	k := NewKey("shift+f")
+	if !k.Contains("F") {
+		t.Fatalf(`NewKey("shift+f") should match "F", got keyNames=%v`, k.keyNames)
+	}
+	if k.Contains("shift+f") {
+		t.Fatalf(`NewKey("shift+f") should not still carry the literal "shift+f"`)
+	}
+}
+
+func TestNormalizeShiftLetter(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"shift+f", "F"},
+		{"shift+F", "F"},
+		{"shift+up", "shift+up"}, // special key, modifier is delivered
+		{"shift+left", "shift+left"},
+		{"ctrl+f", "ctrl+f"},
+		{"f", "f"},
+		{"shift++", "shift++"}, // not a letter
+		{"shift+", "shift+"},   // empty rest
+	}
+	for _, tt := range tests {
+		if got := normalizeShiftLetter(tt.in); got != tt.want {
+			t.Fatalf("normalizeShiftLetter(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestKeyMultiBindingNormalizes(t *testing.T) {
+	// Comma-separated lists normalize each token; non-shift tokens are untouched.
+	k := NewKey("shift+x,ctrl+x")
+	if !k.Contains("X") || !k.Contains("ctrl+x") {
+		t.Fatalf(`NewKey("shift+x,ctrl+x") keyNames=%v, want both "X" and "ctrl+x"`, k.keyNames)
+	}
+}
+
 func TestParseConfigFillsScalarDefaults(t *testing.T) {
 	// A config that omits the audio scalars must not end up muted, with a zero
 	// playback buffer, or with no rewind step.
