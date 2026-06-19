@@ -48,6 +48,9 @@ func (p ProgressControl) Value() float64 {
 const (
 	_VOLUME_FADE_STEPS     = 2
 	_VOLUME_SNAP_THRESHOLD = 0.005 // snap to 0/1 when close enough
+
+	_MARQUEE_GAP             = 4 // spaces between the end and the wrapped-around start
+	_MARQUEE_FRAMES_PER_STEP = 4 // advance one column every N playback frames (~7 cols/s at 30fps)
 )
 
 var rewindAmount = time.Duration(config.Current.RewindDuration) * time.Second
@@ -71,7 +74,9 @@ type Model struct {
 	playStarted    time.Time
 	volume         float64
 	volumeIncremet float64
+	volumeBarShown float64 // eased value the volume bar is drawn at (lerps toward volume)
 	lastVolumeKey  time.Time
+	animTick       uint64 // monotonic frame counter advanced each ProgressControl, drives the now-playing marquee
 	playerContext  *oto.Context
 	player         *oto.Player
 	trackWrapper   *readWrapper
@@ -104,6 +109,7 @@ func New(p *tea.Program, likesMap *map[string]bool) *Model {
 	m.volumeBar.FullColor = string(style.AccentColor)
 	m.volumeBar.EmptyColor = string(style.BackgroundColor)
 	m.volumeBar.Width = style.VolumeIndicatorWidth
+	m.volumeBarShown = m.volume
 
 	m.help.Ellipsis = "…"
 	m.trackWrapper = &readWrapper{program: m.program}
@@ -156,7 +162,7 @@ func (m *Model) View() string {
 		} else {
 			volumeIcon = style.IconVolumeHigh
 		}
-		volumeIndicator = " " + volumeIcon + " " + m.volumeBar.ViewAs(m.volume)
+		volumeIndicator = " " + volumeIcon + " " + m.volumeBar.ViewAs(m.volumeBarShown)
 		volumeIndicatorWidth = lipgloss.Width(volumeIndicator)
 	}
 
@@ -207,11 +213,24 @@ func (m *Model) View() string {
 		trackAddInfo := style.TrackAddInfoStyle.Render(trackLike + trackTime)
 		addInfoLen := lipgloss.Width(trackAddInfo)
 		maxLen := m.Width() - addInfoLen - 4
-		stl := lipgloss.NewStyle().MaxWidth(maxLen - 1)
 
 		trackTitleLen := lipgloss.Width(trackTitle)
 		if trackTitleLen > maxLen {
-			trackTitle = stl.Render(trackTitle) + "…"
+			// Too long to fit — scroll it instead of truncating. The marquee renders
+			// from the raw text in the title style (dropping the separate version
+			// styling while scrolling).
+			rawTitle := m.track.Title
+			if m.track.Version != "" {
+				rawTitle += " " + m.track.Version
+			}
+			titleStyle := style.TrackTitleStyle
+			if !m.track.Available {
+				titleStyle = titleStyle.Strikethrough(true)
+			}
+			// MaxWidth clamps to maxLen display cells; marquee slices by rune, so a
+			// window of wide (CJK/emoji) glyphs would otherwise overflow and wrap the
+			// fixed-height now-playing line.
+			trackTitle = titleStyle.MaxWidth(maxLen).Render(marquee(rawTitle, maxLen, m.animTick))
 		} else if trackTitleLen < maxLen {
 			trackTitle += strings.Repeat(" ", maxLen-trackTitleLen)
 		}
@@ -219,7 +238,7 @@ func (m *Model) View() string {
 		trackArtist := style.TrackArtistStyle.Render(helpers.ArtistList(m.track.Artists))
 		trackArtistLen := lipgloss.Width(trackArtist)
 		if trackArtistLen > maxLen {
-			trackArtist = stl.Render(trackArtist) + "…"
+			trackArtist = style.TrackArtistStyle.MaxWidth(maxLen).Render(marquee(helpers.ArtistList(m.track.Artists), maxLen, m.animTick))
 		} else if trackArtistLen < maxLen {
 			trackArtist += strings.Repeat(" ", maxLen-trackArtistLen)
 		}
@@ -321,6 +340,8 @@ func (m *Model) Update(message tea.Msg) (*Model, tea.Cmd) {
 	// track progress update
 	case ProgressControl:
 		m.volumeFadeTick()
+		m.volumeBarTick()
+		m.animTick++
 		cmd = m.progress.SetPercent(msg.Value())
 		cmds = append(cmds, cmd)
 
@@ -370,8 +391,25 @@ func (m *Model) SetVolume(v float64) {
 	}
 	m.volume = v
 	m.volumeIncremet = m.volume / _VOLUME_FADE_STEPS
+	// The volume bar eases toward m.volume on the playback tick; when nothing is
+	// playing there is no tick to animate it, so snap it for immediate feedback.
+	if m.player == nil || m.paused {
+		m.volumeBarShown = m.volume
+	}
 	config.Current.Volume = m.volume
 	config.Save()
+}
+
+// volumeBarTick eases the drawn volume level toward the target volume. Called on
+// the playback tick so a volume change glides instead of snapping.
+func (m *Model) volumeBarTick() {
+	const ease = 0.3
+	diff := m.volume - m.volumeBarShown
+	if diff < 0.002 && diff > -0.002 {
+		m.volumeBarShown = m.volume
+		return
+	}
+	m.volumeBarShown += diff * ease
 }
 
 func (m *Model) SetLirycs(show bool) {
@@ -462,6 +500,9 @@ func (m *Model) Pause() {
 	}
 	m.playtime += time.Since(m.playStarted)
 	m.paused = true
+	// Playback ticks (which ease the volume bar) are about to stop — land the bar
+	// on its target so it can't freeze mid-ease after a volume change.
+	m.volumeBarShown = m.volume
 }
 
 func (m *Model) Rewind(amount time.Duration) tea.Cmd {
@@ -625,6 +666,29 @@ func (m *Model) tryGetTextLine(idx int) string {
 		return " "
 	}
 	return m.textLyrics[idx]
+}
+
+// marquee returns a width-wide slice of text. When text fits it is right-padded
+// with spaces; when it is longer than width it scrolls horizontally, advancing
+// with tick and wrapping around through a small gap. Slicing is rune-based, so
+// it assumes single-width glyphs (true for latin/cyrillic titles).
+func marquee(text string, width int, tick uint64) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text + strings.Repeat(" ", width-len(runes))
+	}
+	period := len(runes) + _MARQUEE_GAP
+	offset := int((tick / _MARQUEE_FRAMES_PER_STEP) % uint64(period))
+	buf := make([]rune, 0, len(runes)+_MARQUEE_GAP+width)
+	buf = append(buf, runes...)
+	for i := 0; i < _MARQUEE_GAP; i++ {
+		buf = append(buf, ' ')
+	}
+	buf = append(buf, runes...) // wrap-around source for the tail window
+	return string(buf[offset : offset+width])
 }
 
 func (m *Model) lyricsBreak(line string) (newLine string) {
