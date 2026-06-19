@@ -14,8 +14,6 @@ import (
 )
 
 func (m *Model) searchControl(msg search.Control) tea.Cmd {
-	var cmd tea.Cmd
-
 	switch msg {
 	case search.SELECT:
 		m.isSearchActive = false
@@ -25,14 +23,12 @@ func (m *Model) searchControl(msg search.Control) tea.Cmd {
 			return nil
 		}
 
-		searchRes, err := m.client.Search(req, api.SEARCH_ALL)
-		if err != nil {
-			log.Print(log.LVL_ERROR, "failed to search [%s]: %s", req, err)
-			m.tracker.ShowError("search")
-			return nil
-		}
-
-		cmd = m.displaySearchResults(searchRes)
+		// Run the search — and the per-result track fetches it triggers — off the
+		// Bubble Tea goroutine so the interface doesn't freeze for the duration of
+		// several HTTP round-trips. Show the loading spinner meanwhile; the result
+		// arrives as a searchResultMsg.
+		m.isLoading = true
+		return tea.Batch(m.spinner.Tick, m.runSearch(req))
 	case search.CANCEL:
 		m.isSearchActive = false
 	case search.UPDATE_SUGGESTIONS:
@@ -45,10 +41,141 @@ func (m *Model) searchControl(msg search.Control) tea.Cmd {
 		m.searchDialog.SetSuggestions(suggestions.Suggestions)
 	}
 
-	return cmd
+	return nil
 }
 
-func (m *Model) displaySearchResults(res api.SearchResult) tea.Cmd {
+// runSearch performs the catalog search and builds the result items in a
+// background command, returning them via searchResultMsg.
+func (m *Model) runSearch(req string) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		res, err := client.Search(req, api.SEARCH_ALL)
+		if err != nil {
+			return searchResultMsg{req: req, err: err}
+		}
+		return searchResultMsg{req: req, items: buildSearchItems(client, res)}
+	}
+}
+
+// buildSearchItems turns a search response into sidebar items, fetching each
+// matching artist/album/playlist's tracks. It runs on the background goroutine
+// (runSearch), so it only touches the API client and never mutates the model.
+func buildSearchItems(client *api.YaMusicClient, res api.SearchResult) []*playlist.Item {
+	var items []*playlist.Item
+
+	// The single best match, surfaced first — but only when it is a track (the
+	// Best.Result field is decoded as a Track, so for artist/album bests it would
+	// be mostly empty; those still appear in the per-type results below).
+	if res.Best.Type == api.SEARCH_TRACK && res.Best.Result.Title != "" {
+		best := res.Best.Result
+		if best.RealId != "" {
+			best.Id = best.RealId
+		}
+		items = append(items, &playlist.Item{
+			Name:    "best match: " + best.Title,
+			Active:  true,
+			Subitem: true,
+			Tracks:  []api.Track{best},
+		})
+	}
+
+	if len(res.Tracks.Results) > 0 {
+		items = append(items, &playlist.Item{
+			Name:    "search \"" + res.Text + "\"",
+			Active:  true,
+			Subitem: true,
+			Tracks:  res.Tracks.Results,
+		})
+	}
+
+	if config.Current.Search.Artists {
+		for _, artist := range res.Artists.Results {
+			if !strings.Contains(strings.ToLower(artist.Name), strings.ToLower(res.Text)) {
+				continue
+			}
+
+			artistTracks, err := client.ArtistPopularTracks(artist.Id)
+			if err != nil {
+				log.Print(log.LVL_ERROR, "failed to obtain search [%s] artist [%s] tracks: %s", res.Text, artist.Name, err)
+				continue
+			}
+
+			tracks, err := client.Tracks(artistTracks.Tracks)
+			if err != nil {
+				log.Print(log.LVL_ERROR, "failed to obtain search [%s] artist [%s] tracks full info: %s", res.Text, artist.Name, err)
+				continue
+			}
+
+			items = append(items, &playlist.Item{
+				Name:    artist.Name,
+				Active:  true,
+				Subitem: true,
+				Tracks:  tracks,
+			})
+		}
+	}
+
+	if config.Current.Search.Albums {
+		for _, album := range res.Albums.Results {
+			if !strings.Contains(strings.ToLower(album.Title), strings.ToLower(res.Text)) {
+				continue
+			}
+
+			albumWithTracks, err := client.Album(album.Id, true)
+			if err != nil {
+				log.Print(log.LVL_ERROR, "failed to obtain search [%s] album [%s] tracks: %s", res.Text, album.Title, err)
+				continue
+			}
+
+			albumArtists := helpers.ArtistList(albumWithTracks.Artists)
+			if len(albumWithTracks.Volumes) > 1 {
+				for i := range albumWithTracks.Volumes {
+					items = append(items, &playlist.Item{
+						Name:    fmt.Sprintf("%s vol.%d (%s)", albumWithTracks.Title, i, albumArtists),
+						Active:  true,
+						Subitem: true,
+						Tracks:  albumWithTracks.Volumes[i],
+					})
+				}
+			} else if len(albumWithTracks.Volumes) == 1 {
+				items = append(items, &playlist.Item{
+					Name:    fmt.Sprintf("%s (%s)", albumWithTracks.Title, albumArtists),
+					Active:  true,
+					Subitem: true,
+					Tracks:  albumWithTracks.Volumes[0],
+				})
+			}
+		}
+	}
+
+	if config.Current.Search.Playlists {
+		for _, pl := range res.Playlists.Results {
+			if !strings.Contains(strings.ToLower(pl.Title), strings.ToLower(res.Text)) {
+				continue
+			}
+
+			playlistTracks, err := client.PlaylistTracks(pl.Kind, pl.Owner.Uid, false)
+			if err != nil {
+				log.Print(log.LVL_ERROR, "failed to obtain search [%s] playlist [%s] tracks: %s", res.Text, pl.Title, err)
+				continue
+			}
+
+			items = append(items, &playlist.Item{
+				Name:    pl.Title + " by " + pl.Owner.Name,
+				Active:  true,
+				Subitem: true,
+				Tracks:  playlistTracks,
+			})
+		}
+	}
+
+	return items
+}
+
+// insertSearchResults splices the freshly built search items into the sidebar
+// under a "search results:" header, replacing any previous search section, and
+// moves the cursor onto the first result.
+func (m *Model) insertSearchResults(items []*playlist.Item) tea.Cmd {
 	playlists := m.playlists.Items()
 	searchResIndex := len(playlists) + 2
 	for i, pl := range playlists {
@@ -63,107 +190,7 @@ func (m *Model) displaySearchResults(res api.SearchResult) tea.Cmd {
 		&playlist.Item{Name: "", Kind: playlist.NONE, Active: false, Subitem: false},
 		&playlist.Item{Name: "search results:", Kind: playlist.NONE, Active: false, Subitem: false},
 	)
-
-	if len(res.Tracks.Results) > 0 {
-		playlists = append(playlists, &playlist.Item{
-			Name:    "search \"" + res.Text + "\"",
-			Active:  true,
-			Subitem: true,
-			Tracks:  res.Tracks.Results,
-		})
-	}
-
-	if config.Current.Search.Artists && len(res.Artists.Results) > 0 {
-		// playlists = append(playlists, playlist.Item{Name: "", Kind: playlist.NONE, Active: false, Subitem: false})
-		for _, artist := range res.Artists.Results {
-			if !strings.Contains(strings.ToLower(artist.Name), strings.ToLower(res.Text)) {
-				continue
-			}
-
-			artistTracks, err := m.client.ArtistPopularTracks(artist.Id)
-			if err != nil {
-				sval, _ := m.searchDialog.SuggestionValue()
-				log.Print(log.LVL_ERROR, "failed to obtain search [%s] artist [%s] tracks: %s", sval, artist.Name, err)
-				m.tracker.ShowError("search artist tracks")
-				continue
-			}
-
-			tracks, err := m.client.Tracks(artistTracks.Tracks)
-			if err != nil {
-				sval, _ := m.searchDialog.SuggestionValue()
-				log.Print(log.LVL_ERROR, "failed to obtain search [%s] artist [%s] tracks full info: %s", sval, artist.Name, err)
-				m.tracker.ShowError("search artist tracks info")
-				continue
-			}
-
-			playlists = append(playlists, &playlist.Item{
-				Name:    artist.Name,
-				Active:  true,
-				Subitem: true,
-				Tracks:  tracks,
-			})
-		}
-	}
-
-	if config.Current.Search.Albums && len(res.Albums.Results) > 0 {
-		// playlists = append(playlists, playlist.Item{Name: "", Kind: playlist.NONE, Active: false, Subitem: false})
-		for _, album := range res.Albums.Results {
-			if !strings.Contains(strings.ToLower(album.Title), strings.ToLower(res.Text)) {
-				continue
-			}
-
-			albumWithTracks, err := m.client.Album(album.Id, true)
-			if err != nil {
-				sval, _ := m.searchDialog.SuggestionValue()
-				log.Print(log.LVL_ERROR, "failed to obtain search [%s] album [%s] tracks: %s", sval, album.Title, err)
-				m.tracker.ShowError("search album tracks")
-				continue
-			}
-
-			albumArtists := helpers.ArtistList(albumWithTracks.Artists)
-			if len(albumWithTracks.Volumes) > 1 {
-				for i := range albumWithTracks.Volumes {
-					playlists = append(playlists, &playlist.Item{
-						Name:    fmt.Sprintf("%s vol.%d (%s)", albumWithTracks.Title, i, albumArtists),
-						Active:  true,
-						Subitem: true,
-						Tracks:  albumWithTracks.Volumes[i],
-					})
-				}
-			} else {
-				playlists = append(playlists, &playlist.Item{
-					Name:    fmt.Sprintf("%s (%s)", albumWithTracks.Title, albumArtists),
-					Active:  true,
-					Subitem: true,
-					Tracks:  albumWithTracks.Volumes[0],
-				})
-			}
-		}
-	}
-
-	if config.Current.Search.Playlists && len(res.Playlists.Results) > 0 {
-		// playlists = append(playlists, playlist.Item{Name: "", Kind: playlist.NONE, Active: false, Subitem: false})
-		for _, pl := range res.Playlists.Results {
-			if !strings.Contains(strings.ToLower(pl.Title), strings.ToLower(res.Text)) {
-				continue
-			}
-
-			playlistTracks, err := m.client.PlaylistTracks(pl.Kind, pl.Owner.Uid, false)
-			if err != nil {
-				sval, _ := m.searchDialog.SuggestionValue()
-				log.Print(log.LVL_ERROR, "failed to obtain search [%s] playlist [%s] tracks: %s", sval, pl.Title, err)
-				m.tracker.ShowError("search playlist tracks")
-				continue
-			}
-
-			playlists = append(playlists, &playlist.Item{
-				Name:    pl.Title + " by " + pl.Owner.Name,
-				Active:  true,
-				Subitem: true,
-				Tracks:  playlistTracks,
-			})
-		}
-	}
+	playlists = append(playlists, items...)
 
 	cmd := m.playlists.SetItems(playlists)
 	m.playlists.Select(searchResIndex)

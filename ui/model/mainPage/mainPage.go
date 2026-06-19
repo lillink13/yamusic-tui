@@ -79,6 +79,16 @@ type collectionLoadedMsg struct {
 	err     error
 }
 
+// searchResultMsg carries the outcome of an async catalog search. The whole
+// search — the /search call plus the per-result track fetches — runs off the
+// Bubble Tea goroutine so the UI doesn't freeze; the built items are applied
+// inside Update.
+type searchResultMsg struct {
+	req   string
+	items []*playlist.Item
+	err   error
+}
+
 // mediaSnapshot is a small, mutex-guarded view of the player state that the
 // system media handler (MPRIS / macOS Now Playing / Windows SMTC) queries from
 // its own goroutine. The Bubble Tea Update goroutine is the sole writer (it owns
@@ -206,6 +216,15 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	case collectionLoadedMsg:
 		m.applyCollectionLoaded(msg)
+
+	case searchResultMsg:
+		m.isLoading = false
+		if msg.err != nil {
+			log.Print(log.LVL_ERROR, "failed to search [%s]: %s", msg.req, msg.err)
+			m.tracker.ShowError("search")
+		} else {
+			cmds = append(cmds, m.insertSearchResults(msg.items))
+		}
 
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
