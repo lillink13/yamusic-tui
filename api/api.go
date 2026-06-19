@@ -661,28 +661,67 @@ func (client *YaMusicClient) SearchSuggest(part string) (suggestions SearchSugge
 	return
 }
 
-func (client *YaMusicClient) TrackLyricsRequest(trackId string) (LRCLyrics []LyricPair, err error) {
+// trackLyricsDownload signs the lyrics request (required by the API), asks for
+// the lyrics file in the given format ("LRC" for time-synced, "TEXT" for plain),
+// and returns the raw downloaded body. The response only carries a download URL;
+// the actual lyrics text lives behind a second, unsigned GET.
+func (client *YaMusicClient) trackLyricsDownload(trackId, format string) (string, error) {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 	// scary algorithm to sign the request (required for lyrics)
 	message := trackId + timestamp
 	h := hmac.New(sha256.New, []byte("p93jhgh689SBReK6ghtw62"))
 	h.Write([]byte(message))
-	hmacSign := h.Sum(nil)
-	sign := base64.StdEncoding.EncodeToString(hmacSign)
-	lyrics, _, err := getRequest[TrackLyrics](client.token, fmt.Sprintf("/tracks/%s/lyrics", trackId), url.Values{"sign": {sign}, "timeStamp": {timestamp}, "format": {"LRC"}})
+	sign := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	lyrics, _, err := getRequest[TrackLyrics](client.token, fmt.Sprintf("/tracks/%s/lyrics", trackId), url.Values{"sign": {sign}, "timeStamp": {timestamp}, "format": {format}})
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.Get(lyrics.DownloadUrl)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (client *YaMusicClient) TrackLyricsRequest(trackId string) (LRCLyrics []LyricPair, err error) {
+	data, err := client.trackLyricsDownload(trackId, "LRC")
 	if err != nil {
 		return []LyricPair{}, err
 	}
-	LRCLyricsResponse, err := http.Get(lyrics.DownloadUrl)
+	return parseLRCText(data), nil
+}
+
+// TrackTextLyricsRequest fetches the plain-text (unsynced) lyrics of a track,
+// split into lines. Used as a fallback for songs that have lyrics but no
+// time-synced LRC.
+func (client *YaMusicClient) TrackTextLyricsRequest(trackId string) (lines []string, err error) {
+	data, err := client.trackLyricsDownload(trackId, "TEXT")
 	if err != nil {
-		return []LyricPair{}, err
+		return nil, err
 	}
-	data, err := io.ReadAll(LRCLyricsResponse.Body)
-	if err != nil {
-		return []LyricPair{}, err
+	return parseTextLyrics(data), nil
+}
+
+// parseTextLyrics splits raw plain-text lyrics into lines, normalizing line
+// endings and trimming the empty lines that bracket the body.
+func parseTextLyrics(text string) []string {
+	raw := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	lines := make([]string, 0, len(raw))
+	for _, l := range raw {
+		lines = append(lines, strings.TrimRight(l, " \t\r"))
 	}
-	LRCLyrics = parseLRCText(string(data))
-	return
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 func parseLRCText(lrcContent string) []LyricPair {

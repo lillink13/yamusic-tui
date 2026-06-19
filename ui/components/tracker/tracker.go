@@ -56,6 +56,7 @@ type Model struct {
 	width      int
 	track      api.Track
 	lyrics     []api.LyricPair
+	textLyrics []string
 	progress   progress.Model
 	volumeBar  progress.Model
 	help       help.Model
@@ -383,7 +384,7 @@ func (m *Model) Volume() float64 {
 	return m.volume
 }
 
-func (m *Model) StartTrack(track *api.Track, reader *stream.BufferedStream, lyrics []api.LyricPair) {
+func (m *Model) StartTrack(track *api.Track, reader *stream.BufferedStream, lyrics []api.LyricPair, textLyrics []string) {
 	m.showError = false
 	m.volume = config.Current.Volume
 	m.volumeIncremet = m.volume / _VOLUME_FADE_STEPS
@@ -398,6 +399,7 @@ func (m *Model) StartTrack(track *api.Track, reader *stream.BufferedStream, lyri
 	m.player.SetVolume(0)
 	m.player.Play()
 	m.lyrics = lyrics
+	m.textLyrics = textLyrics
 	m.paused = false
 	m.playtime = 0
 	m.playStarted = time.Now()
@@ -575,8 +577,8 @@ func (m *Model) renderLyrics() string {
 	previousLine := " "
 
 	if m.player != nil && m.showLyrics {
-		switch m.track.LyricsInfo.HasAvailableSyncLyrics {
-		case true:
+		switch {
+		case m.track.LyricsInfo.HasAvailableSyncLyrics:
 			for idx, line := range m.lyrics {
 				if line.Timestamp > int(m.Position().Milliseconds()-1000) {
 					previousLine = m.tryGetLyricsLine(idx - 2)
@@ -585,8 +587,19 @@ func (m *Model) renderLyrics() string {
 					break
 				}
 			}
-		case false:
-			currentLine = "This song doesn't have synced lyrics!"
+		case len(m.textLyrics) > 0:
+			// Plain-text fallback: there are no per-line timestamps, so approximate
+			// a follow by scrolling through the lyrics in proportion to playback
+			// progress, reusing the same prev/current/next window.
+			idx := int(m.trackWrapper.Progress() * float64(len(m.textLyrics)))
+			if idx >= len(m.textLyrics) {
+				idx = len(m.textLyrics) - 1
+			}
+			previousLine = m.tryGetTextLine(idx - 1)
+			currentLine = m.lyricsBreak(m.tryGetTextLine(idx))
+			nextLine = m.tryGetTextLine(idx + 1)
+		default:
+			currentLine = "This song doesn't have lyrics!"
 		}
 	}
 
@@ -605,6 +618,13 @@ func (m *Model) tryGetLyricsLine(idx int) (line string) {
 		return
 	}
 	return m.lyrics[idx].Line
+}
+
+func (m *Model) tryGetTextLine(idx int) string {
+	if idx < 0 || idx >= len(m.textLyrics) {
+		return " "
+	}
+	return m.textLyrics[idx]
 }
 
 func (m *Model) lyricsBreak(line string) (newLine string) {

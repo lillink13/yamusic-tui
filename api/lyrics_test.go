@@ -83,6 +83,54 @@ func TestParseLRCText(t *testing.T) {
 	}
 }
 
+func TestParseTextLyrics(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{
+			name: "simple lines",
+			in:   "first\nsecond\nthird",
+			want: []string{"first", "second", "third"},
+		},
+		{
+			name: "windows line endings are normalized",
+			in:   "first\r\nsecond\r\n",
+			want: []string{"first", "second"},
+		},
+		{
+			name: "leading and trailing blank lines are trimmed",
+			in:   "\n\nverse\n\nchorus\n\n",
+			want: []string{"verse", "", "chorus"},
+		},
+		{
+			name: "trailing whitespace is stripped per line",
+			in:   "padded   \nclean",
+			want: []string{"padded", "clean"},
+		},
+		{
+			name: "empty input yields no lines",
+			in:   "",
+			want: []string{},
+		},
+		{
+			name: "whitespace-only input yields no lines",
+			in:   "  \n\t\n",
+			want: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseTextLyrics(tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseTextLyrics(%q) = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLRCFractionToMillis(t *testing.T) {
 	tests := []struct {
 		frac string

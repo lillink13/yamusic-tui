@@ -213,10 +213,19 @@ skipcover:
 	var trackReader io.ReadCloser
 	var trackSize int64
 	var lyrics []api.LyricPair
-	if track.LyricsInfo.HasAvailableSyncLyrics {
+	var textLyrics []string
+	switch {
+	case track.LyricsInfo.HasAvailableSyncLyrics:
 		lyrics, err = m.client.TrackLyricsRequest(track.Id)
 		if err != nil {
-			log.Print(log.LVL_WARNIGN, "failed to obtain track [%s] lyrics: %s", track.Id, err)
+			log.Print(log.LVL_WARNIGN, "failed to obtain track [%s] synced lyrics: %s", track.Id, err)
+			m.tracker.ShowError("track lyrics")
+		}
+	case track.LyricsInfo.HasAvailableTextLyrics:
+		// No time-synced LRC, but the song still has lyrics — fall back to plain text.
+		textLyrics, err = m.client.TrackTextLyricsRequest(track.Id)
+		if err != nil {
+			log.Print(log.LVL_WARNIGN, "failed to obtain track [%s] text lyrics: %s", track.Id, err)
 			m.tracker.ShowError("track lyrics")
 		}
 	}
@@ -308,7 +317,7 @@ skipcover:
 		}
 	}
 
-	m.tracker.StartTrack(track, trackBuffer, lyrics)
+	m.tracker.StartTrack(track, trackBuffer, lyrics, textLyrics)
 	m.indicateCurrentTrackPlaying(true)
 	m.setMediaMetadata(track)
 	m.mediaHandler.OnPlayback()
