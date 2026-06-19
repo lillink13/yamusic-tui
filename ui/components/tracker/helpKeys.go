@@ -8,17 +8,18 @@ import (
 )
 
 type helpKeyMap struct {
-	PlayPause    key.Binding
-	PrevTrack    key.Binding
-	NextTrack    key.Binding
-	LikeUnlike   key.Binding
-	CacheTrack   key.Binding
-	Forward      key.Binding
-	Backward     key.Binding
-	VolUp        key.Binding
-	VolDown      key.Binding
-	ToggleLyrics key.Binding
-	HidePlayer   key.Binding
+	PlayPause        key.Binding
+	PrevTrack        key.Binding
+	NextTrack        key.Binding
+	LikeUnlike       key.Binding
+	CacheTrack       key.Binding
+	Forward          key.Binding
+	Backward         key.Binding
+	VolUp            key.Binding
+	VolDown          key.Binding
+	ToggleLyrics     key.Binding
+	ToggleVisualizer key.Binding
+	HidePlayer       key.Binding
 }
 
 func newHelpMap() *helpKeyMap {
@@ -64,6 +65,10 @@ func newHelpMap() *helpKeyMap {
 			controls.PlayerToggleLyrics.Binding(),
 			controls.PlayerToggleLyrics.Help("lyrics"),
 		),
+		ToggleVisualizer: key.NewBinding(
+			controls.PlayerToggleVisualizer.Binding(),
+			controls.PlayerToggleVisualizer.Help("visualizer"),
+		),
 		HidePlayer: key.NewBinding(
 			controls.PlayerHide.Binding(),
 			controls.PlayerHide.Help("hide"),
@@ -79,6 +84,6 @@ func (k helpKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.PlayPause, k.LikeUnlike, k.ToggleLyrics, k.CacheTrack},
 		{k.NextTrack, k.PrevTrack, k.Forward, k.Backward},
-		{k.VolUp, k.VolDown, k.HidePlayer},
+		{k.VolUp, k.VolDown, k.ToggleVisualizer, k.HidePlayer},
 	}
 }
