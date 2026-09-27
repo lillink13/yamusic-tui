@@ -156,16 +156,15 @@ Increase the `buffer-size-ms` if you have glitches or stutters.
 Set `style.use-terminal-colors: true` to build the color scheme from your
 terminal theme instead of the hard-coded hex values. On startup yamusic-tui
 queries the terminal via OSC escape sequences (OSC 10 for the foreground and
-OSC 11 for the background) and derives a readable palette from them: text
-colors are based on the terminal foreground, borders and selection are blends
-of foreground and background, and the accent keeps a recognizable warm hue that
-works on both dark and light themes.
+OSC 11 for the background) and derives a readable palette from them: the accent
+and text colors are based on the terminal foreground, borders and selection are
+blends of foreground and background, so the whole UI follows your theme — no
+hard-coded brand accent is imposed.
 
 The terminal replies only if it supports OSC responses (most terminals do,
 including kitty, Alacritty, WezTerm, xterm and Konsole; `screen` and `tmux`
-do not). When the query fails, the configured hex values are used unchanged.
-Note that a per-color hex value you set explicitly is always honored, and the
-rest is taken from the terminal.
+do not). When the query fails, or when the flag is off, the configured hex
+values are used unchanged.
 
 ## System media controls
 

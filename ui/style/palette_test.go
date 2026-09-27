@@ -8,25 +8,6 @@ import (
 	"github.com/lucasb-eyer/go-colorful"
 )
 
-func TestIsHexColor(t *testing.T) {
-	tests := []struct {
-		in   string
-		want bool
-	}{
-		{"#FC0", true},
-		{"#F33", true},
-		{"#4a3c00", true},
-		{"accent", false},
-		{"", false},
-		{"#xxxx", false},
-	}
-	for _, tt := range tests {
-		if got := isHexColor(tt.in); got != tt.want {
-			t.Errorf("isHexColor(%q) = %v, want %v", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestResolvePaletteDisabledNoTerminal(t *testing.T) {
 	// Flag off: palette must stay empty, raw values are used verbatim.
 	style := &config.Style{
@@ -138,20 +119,16 @@ func TestBuildPaletteLightBackground(t *testing.T) {
 func TestResolveWithTerminalPalette(t *testing.T) {
 	pal := buildPalette(darkTerminal())
 
-	if got := pal.resolve("accent", "#FC0"); got != lipgloss.Color("#FC0") {
-		t.Errorf("explicit hex accent should be used verbatim, got %v", got)
+	// With terminal colors enabled the palette wins over the config hex, so even
+	// an explicitly configured accent follows the terminal theme.
+	if got := pal.resolve("accent", "#FC0"); got == lipgloss.Color("#FC0") {
+		t.Errorf("accent should be resolved from terminal palette, got %v", got)
 	}
 	if got := pal.resolve("accent", ""); got == lipgloss.Color("") {
 		t.Errorf("empty accent should be resolved from terminal palette, got %v", got)
 	}
+	// Keys the palette does not fill (e.g. an unknown one) fall back to raw.
 	if got := pal.resolve("unknown", "#ABC"); got != lipgloss.Color("#ABC") {
 		t.Errorf("unknown key should fall back to raw #ABC, got %v", got)
-	}
-}
-
-func TestResolveExplicitHexOverridesPalette(t *testing.T) {
-	pal := buildPalette(darkTerminal())
-	if got := pal.resolve("background", "#112233"); got != lipgloss.Color("#112233") {
-		t.Errorf("explicit hex background should override palette, got %v", got)
 	}
 }

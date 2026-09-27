@@ -1,8 +1,6 @@
 package style
 
 import (
-	"strings"
-
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lillink13/yamusic-tui/config"
 	"github.com/lucasb-eyer/go-colorful"
@@ -124,11 +122,10 @@ func buildPalette(tc terminalColors) *palette {
 }
 
 func (p *palette) resolve(key, raw string) lipgloss.Color {
-	// An explicit hex escapes the terminal palette entirely: the user wants this
-	// exact color no matter what the terminal reports.
-	if isHexColor(raw) {
-		return lipgloss.Color(raw)
-	}
+	// When terminal colors are enabled, the palette fully replaces the config's
+	// hex values: every UI element should follow the terminal theme. Config hex
+	// colors only take over when the palette has no value for a key (or when the
+	// flag is off, in which case resolvePalette returns an empty palette).
 	if c := p.colorFor(key); c != nil {
 		return lipgloss.Color(c.Hex())
 	}
@@ -246,18 +243,4 @@ func resolvePalette(style *config.Style) *palette {
 		return &palette{}
 	}
 	return buildPalette(tc)
-}
-
-// isHexColor reports whether a config value is a literal hex color, in which
-// case it must be used as-is instead of being resolved from the terminal.
-func isHexColor(value string) bool {
-	v := strings.TrimSpace(value)
-	if len(v) == 0 {
-		return false
-	}
-	if v[0] != '#' {
-		return false
-	}
-	_, err := colorful.Hex(v)
-	return err == nil
 }
