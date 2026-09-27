@@ -15,6 +15,7 @@ import (
 	"github.com/lillink13/yamusic-tui/media/handler"
 	"github.com/lillink13/yamusic-tui/ui/components/input"
 	"github.com/lillink13/yamusic-tui/ui/components/playlist"
+	"github.com/lillink13/yamusic-tui/ui/components/radioconfig"
 	"github.com/lillink13/yamusic-tui/ui/components/search"
 	"github.com/lillink13/yamusic-tui/ui/components/tracker"
 	"github.com/lillink13/yamusic-tui/ui/components/tracklist"
@@ -52,11 +53,15 @@ type dataLoadedMsg struct {
 
 // stationStartedMsg carries the result of lazily starting a radio station's
 // rotor session (done on first play, since starting a session per station at
-// load time would be slow and noisy).
+// load time would be slow and noisy). settingsRev is the snapshot of the
+// station's settings version at request time; applyStationStarted discards
+// stale results if the station was re-configured while the request was in
+// flight.
 type stationStartedMsg struct {
-	stationId api.StationId
-	tracks    api.StationTracks
-	err       error
+	stationId   api.StationId
+	tracks      api.StationTracks
+	settingsRev uint64
+	err         error
 }
 
 // collectionKey uniquely identifies a liked playlist/artist/album across the
@@ -126,10 +131,12 @@ type Model struct {
 
 	searchDialog           *search.Model
 	inputDialog            *input.Model
+	radioDialog            *radioconfig.Model
 	isLoading              bool
 	isSearchActive         bool
 	isAddPlaylistActive    bool
 	isRenamePlaylistActive bool
+	isRadioConfigActive    bool
 	isPlaylistHideOverride bool
 
 	currentPlaylistIndex int
@@ -141,6 +148,11 @@ type Model struct {
 	sectionItems       map[playlist.SectionId][]*playlist.Item
 	startingStations   map[api.StationId]bool
 	loadingCollections map[collectionKey]bool
+	// stationSettingsRev tracks, per station, how many times its settings were
+	// applied. startStation snapshots the value for its station; applyStationStarted
+	// drops a result whose revision no longer matches, so a re-configured station
+	// can't be overwritten by an in-flight request started with the old settings.
+	stationSettingsRev map[string]uint64
 
 	mediaMu   sync.RWMutex
 	mediaSnap mediaSnapshot
@@ -158,6 +170,7 @@ func New(mediaHandler handler.MediaHandler) *Model {
 	m.cachedTracksMap = make(map[string]bool)
 	m.sectionItems = make(map[playlist.SectionId][]*playlist.Item)
 	m.startingStations = make(map[api.StationId]bool)
+	m.stationSettingsRev = make(map[string]uint64)
 	m.loadingCollections = make(map[collectionKey]bool)
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.Points))
 	m.playlists = playlist.New(m.program, "YaMusic")
@@ -243,6 +256,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case m.isRenamePlaylistActive:
 			m.inputDialog, cmd = m.inputDialog.Update(message)
 			cmds = append(cmds, cmd)
+		case m.isRadioConfigActive:
+			m.radioDialog, cmd = m.radioDialog.Update(message)
+			cmds = append(cmds, cmd)
 		case controls.Reload.Contains(keypress):
 			m.isLoading = true
 			m.tracker.HideError()
@@ -292,6 +308,46 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.isRenamePlaylistActive = true
 		case playlist.TOGGLE_VIEW:
 			m.isPlaylistHideOverride = !m.isPlaylistHideOverride
+		case playlist.STATION_CONFIG:
+			sel := m.playlists.SelectedItem()
+			// Radio settings apply to rotor stations and to My Wave (also a
+			// rotor station). Built-in entries like likes/local or user
+			// playlists have no radio settings — nothing to configure.
+			if sel == nil || (sel.Kind != playlist.STATION && sel.Kind != playlist.MYWAVE) {
+				break
+			}
+			m.radioDialog = radioconfig.New(sel.StationId.String())
+			m.isRadioConfigActive = true
+		}
+
+	// radio configuration control update
+	case radioconfig.Control:
+		switch msg {
+		case radioconfig.APPLY:
+			m.isRadioConfigActive = false
+			station := m.radioDialog.Station()
+			if station == "" {
+				break
+			}
+			res := m.radioDialog.Result()
+			if res.IsZero() {
+				config.Current.DeleteRadioSettings(station)
+			} else {
+				config.Current.SetRadioSettings(station, res)
+			}
+			if err := config.Save(); err != nil {
+				log.Print(log.LVL_ERROR, "failed to save radio settings: %s", err)
+			}
+			// Invalidate any in-flight station start so its result (started with
+			// the old settings) can't overwrite the freshly configured station.
+			m.stationSettingsRev[station]++
+			// If this station's session is already running, restarting it picks
+			// up the new settings.
+			m.restartStationIfRunning(station)
+		case radioconfig.CANCEL:
+			m.isRadioConfigActive = false
+		case radioconfig.CURSOR_UP, radioconfig.CURSOR_DOWN, radioconfig.VALUE_LEFT, radioconfig.VALUE_RIGHT:
+			// handled inside the dialog; nothing extra to do
 		}
 
 	// tracklist control update
@@ -467,6 +523,8 @@ func (m *Model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.searchDialog.View())
 	} else if m.isRenamePlaylistActive {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.inputDialog.View())
+	} else if m.isRadioConfigActive {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.radioDialog.View())
 	}
 
 	playlistView := m.playlists.View()
@@ -512,6 +570,9 @@ func (m *Model) resize(width, height int) {
 
 	m.searchDialog.SetSize(searchWidth, m.height-4)
 	m.inputDialog.SetWidth(searchWidth)
+	if m.radioDialog != nil {
+		m.radioDialog.SetSize(searchWidth, m.height-4)
+	}
 }
 
 // loadData performs all start-up network and disk I/O on a background goroutine
@@ -553,7 +614,7 @@ func (m *Model) loadData() tea.Msg {
 	result.client = client
 
 	// My Wave rotor session.
-	if session, err := client.RotorNewSession(api.MyWaveId); err != nil {
+	if session, err := client.RotorNewSession(api.MyWaveId, rotorSettingsFor(api.MyWaveId.String())); err != nil {
 		log.Print(log.LVL_ERROR, "unable to init rotor session: %s", err)
 		result.errLabel = "unable to init rotor session"
 	} else {
@@ -787,9 +848,54 @@ func (m *Model) startStation(stationId api.StationId) tea.Cmd {
 		return nil
 	}
 	client := m.client
+	rev := m.stationSettingsRev[stationId.String()]
 	return func() tea.Msg {
-		tracks, err := client.RotorNewSession(stationId)
-		return stationStartedMsg{stationId: stationId, tracks: tracks, err: err}
+		tracks, err := client.RotorNewSession(stationId, rotorSettingsFor(stationId.String()))
+		return stationStartedMsg{stationId: stationId, tracks: tracks, settingsRev: rev, err: err}
+	}
+}
+
+// restartStationIfRunning re-arms a radio station's rotor session (including My
+// Wave, which lives at the top of the sidebar rather than in the stations
+// section) so the newly saved settings are picked up on the next play-through.
+// The currently-playing station is left untouched (its session keeps running);
+// the settings apply when it is restarted. It is a no-op for stations without a
+// running session.
+func (m *Model) restartStationIfRunning(stationStr string) {
+	playing := ""
+	if m.currentPlaylistIndex >= 0 && m.currentPlaylistIndex < len(m.playlists.Items()) {
+		playing = m.playlists.Items()[m.currentPlaylistIndex].StationId.String()
+	}
+	for _, s := range m.playlists.Items() {
+		if s.StationId.String() == stationStr && s.SessionId != "" && s.StationId.String() != playing {
+			s.SessionId = ""
+			s.SessionBatch = ""
+			s.Tracks = nil
+			s.CurrentTrack = 0
+			s.SelectedTrack = 0
+			break
+		}
+	}
+}
+
+// rotorSettingsFor returns the persisted radio settings for a station as an
+// api.RotorSettings, or nil when the user configured nothing (so the server
+// keeps its own defaults). A shared "default" entry applies to all stations.
+func rotorSettingsFor(stationStr string) *api.RotorSettings {
+	var s config.RadioSettings
+	var ok bool
+	if s, ok = config.Current.GetRadioSettings(stationStr); !ok {
+		s, ok = config.Current.GetRadioSettings("default")
+	}
+	if !ok || s.IsZero() {
+		return nil
+	}
+
+	return &api.RotorSettings{
+		Language:  s.Language,
+		Diversity: s.Diversity,
+		Mood:      s.Mood,
+		Energy:    s.Energy,
 	}
 }
 
@@ -799,6 +905,15 @@ func (m *Model) startStation(stationId api.StationId) tea.Cmd {
 func (m *Model) applyStationStarted(msg stationStartedMsg) {
 	// The start attempt is complete (success or not) — allow a retry if needed.
 	delete(m.startingStations, msg.stationId)
+
+	// The user re-configured this station while the request was in flight; the
+	// result was started with the old settings and would overwrite the fresh
+	// one, so drop it. The re-arm in restartStationIfRunning already reset the
+	// station, and the next play starts a session with the new settings.
+	if msg.settingsRev != m.stationSettingsRev[msg.stationId.String()] {
+		log.Print(log.LVL_INFO, "station [%s] reconfigured mid-start; dropping stale session", msg.stationId.String())
+		return
+	}
 
 	if msg.err != nil {
 		log.Print(log.LVL_ERROR, "failed to start station: %s", msg.err)

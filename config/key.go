@@ -34,7 +34,46 @@ func (k *Key) Help(help string) key.BindingOpt {
 }
 
 func (k *Key) Contains(keyName string) bool {
-	return slices.Contains(k.keyNames, keyName)
+	// Match layout-independent: a Cyrillic keystroke (RU layout) is compared
+	// against its physical Latin key, so a hotkey configured as "c" fires when
+	// the user presses the physical C key with either layout active.
+	return slices.Contains(k.keyNames, normalizeLayout(keyName))
+}
+
+// normalizeLayout maps Cyrillic letters to the Latin letters on the same
+// physical keys (ЙЦУКЕН layout), preserving case, so bindings are independent
+// of the active keyboard layout. Non-letter runes and Latin text pass through
+// unchanged; Cyrillic symbols mapped to non-letter keys (e.g. х->[) are kept
+// as-is for letter-only hotkeys anyway.
+func normalizeLayout(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		lat, ok := cyrillicToLatin[r]
+		if !ok {
+			b.WriteRune(r)
+			continue
+		}
+		// Preserve case only when both sides are letters.
+		b.WriteRune(lat)
+	}
+	return b.String()
+}
+
+// cyrillicToLatin maps lowercase Cyrillic to the Latin letter occupying the
+// same physical key in the standard Russian (ЙЦУКЕН) layout.
+var cyrillicToLatin = map[rune]rune{
+	'й': 'q', 'ц': 'w', 'у': 'e', 'к': 'r', 'е': 't', 'н': 'y',
+	'г': 'u', 'ш': 'i', 'щ': 'o', 'з': 'p', 'х': '[', 'ъ': ']',
+	'ф': 'a', 'ы': 's', 'в': 'd', 'а': 'f', 'п': 'g', 'р': 'h',
+	'о': 'j', 'л': 'k', 'д': 'l', 'ж': ';', 'э': '\'',
+	'я': 'z', 'ч': 'x', 'с': 'c', 'м': 'v', 'и': 'b', 'т': 'n',
+	'ь': 'm', 'б': ',', 'ю': '.',
+	'Й': 'q', 'Ц': 'w', 'У': 'e', 'К': 'r', 'Е': 't', 'Н': 'y',
+	'Г': 'u', 'Ш': 'i', 'Щ': 'o', 'З': 'p', 'Х': '[', 'Ъ': ']',
+	'Ф': 'a', 'Ы': 's', 'В': 'd', 'А': 'f', 'П': 'g', 'Р': 'h',
+	'О': 'j', 'Л': 'k', 'Д': 'l', 'Ж': ';', 'Э': '\'',
+	'Я': 'z', 'Ч': 'x', 'С': 'c', 'М': 'v', 'И': 'b', 'Т': 'n',
+	'Ь': 'm', 'Б': ',', 'Ю': '.',
 }
 
 func (k *Key) MarshalYAML() (interface{}, error) {
