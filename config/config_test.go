@@ -137,3 +137,52 @@ func TestParseConfigInvalidYAML(t *testing.T) {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
 }
+
+func TestParseConfigRadioSettings(t *testing.T) {
+	yaml := "radio:\n" +
+		"    'genre:popular':\n" +
+		"        language: russian\n" +
+		"        diversity: high\n" +
+		"        mood: 0.5\n" +
+		"        energy: 0.25\n"
+	cfg, err := parseConfig([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	rs, ok := cfg.RadioSettings["genre:popular"]
+	if !ok {
+		t.Fatalf("expected radio settings for genre:popular, got %+v", cfg.RadioSettings)
+	}
+	if rs.Language != "russian" || rs.Diversity != "high" || rs.Mood != 0.5 || rs.Energy != 0.25 {
+		t.Errorf("radio settings = %+v, want russian/high/0.5/0.25", rs)
+	}
+}
+
+func TestRadioSettingsIsZero(t *testing.T) {
+	if !(RadioSettings{}).IsZero() {
+		t.Errorf("empty RadioSettings should be zero")
+	}
+	if (RadioSettings{Language: "any"}).IsZero() {
+		t.Errorf("non-empty RadioSettings should not be zero")
+	}
+}
+
+func TestRadioSettingsConcurrentAccess(t *testing.T) {
+	Current.RadioSettings = map[string]RadioSettings{"default": {Language: "any"}}
+	t.Cleanup(func() { Current.RadioSettings = nil })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			_, _ = Current.GetRadioSettings("genre:x")
+			_ = Current.RadioSettingsSnapshot()
+		}
+	}()
+
+	for i := 0; i < 2000; i++ {
+		Current.SetRadioSettings("genre:x", RadioSettings{Energy: float32(i)})
+		Current.SetRadioSettings("genre:y", RadioSettings{Energy: float32(i + 1)})
+	}
+	<-done
+}
