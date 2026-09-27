@@ -70,13 +70,13 @@ func TestBuildPaletteDarkBackground(t *testing.T) {
 	if l := lightness(pal.background); l > 0.5 {
 		t.Errorf("background lightness = %v, want dark", l)
 	}
-	// Accent should be present and reasonably saturated.
+	// Accent should be present and derived from the terminal foreground (so a
+	// neutral theme does NOT force a hard-coded brand colour).
 	if pal.accent == nil {
 		t.Fatal("accent should be set")
 	}
-	_, s, _ := pal.accent.Hsl()
-	if s < 0.5 {
-		t.Errorf("accent saturation = %v, want a colorful accent", s)
+	if l := lightness(pal.accent); l <= lightness(pal.normalText) {
+		t.Errorf("accent lightness = %v, want brighter than the plain text on dark bg", l)
 	}
 	// Inactive text should be dimmer than active text.
 	if al := lightness(pal.activeText); al < 0.5 {
@@ -88,6 +88,28 @@ func TestBuildPaletteDarkBackground(t *testing.T) {
 	// Lyrics current should be brighter than the (muted) previous line.
 	if lightness(pal.lyricsCurrent) <= lightness(pal.lyricsPrevious) {
 		t.Errorf("lyrics current should be brighter than previous")
+	}
+}
+
+func TestAccentUsesColoredForegroundHue(t *testing.T) {
+	// A terminal with a coloured foreground keeps that hue for the accent.
+	tc := terminalColors{
+		fg:    colorful.Hsl(0.6, 0.8, 0.5), // saturated blue
+		bg:    colorful.Color{R: 0.05, G: 0.05, B: 0.05},
+		dark:  true,
+		hasFG: true,
+		hasBG: true,
+	}
+	pal := buildPalette(tc)
+	if pal.accent == nil {
+		t.Fatal("accent should be set")
+	}
+	h, s, _ := pal.accent.Hsl()
+	if h < 0.55 || h > 0.65 {
+		t.Errorf("accent hue = %v, want ~0.6 (from foreground)", h)
+	}
+	if s < 0.5 {
+		t.Errorf("accent saturation = %v, want colourful", s)
 	}
 }
 

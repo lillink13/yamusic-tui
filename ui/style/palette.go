@@ -81,7 +81,7 @@ func buildPalette(tc terminalColors) *palette {
 
 	if tc.hasFG {
 		fg := tc.fg
-		accent := warmAccent(fg)
+		accent := accentFrom(fg, tc.dark)
 		pal.accent = &accent
 		pal.normalText = &fg
 
@@ -169,15 +169,17 @@ func (p *palette) colorFor(key string) *colorful.Color {
 	return nil
 }
 
-// warmAccent picks a recognizable warm accent hue. When the terminal foreground
-// already carries a hue, it is reused with full saturation; otherwise it falls
-// back to a golden hue that reads well on light and dark themes alike.
-func warmAccent(fg colorful.Color) colorful.Color {
+// accentFrom picks the accent from the terminal foreground so the UI matches
+// the user's theme instead of forcing a brand color. When the foreground
+// already carries a hue (a coloured terminal theme) that hue is reused with
+// higher saturation; otherwise the accent is the terminal's own text color,
+// slightly brightened for visibility, so no hard-coded yellow is imposed.
+func accentFrom(fg colorful.Color, dark bool) colorful.Color {
 	h, s, _ := fg.Hsl()
-	if s < 0.15 {
-		h = 0.13 // ~45°, golden
+	if s >= 0.15 {
+		return colorful.Hsl(h, 0.85, 0.55)
 	}
-	return colorful.Hsl(h, 0.85, 0.55)
+	return shiftLightness(fg, dark, +0.18)
 }
 
 // shiftLightness moves the color towards a darker or lighter variant depending
