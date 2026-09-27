@@ -137,3 +137,21 @@ func TestParseConfigInvalidYAML(t *testing.T) {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
 }
+
+func TestParseConfigUseTerminalColors(t *testing.T) {
+	cfg, err := parseConfig([]byte("style:\n    use-terminal-colors: true\n"))
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if cfg.Style == nil || !cfg.Style.UseTerminalColors {
+		t.Errorf("UseTerminalColors should be true, got %+v", cfg.Style)
+	}
+
+	cfg2, err := parseConfig([]byte("token: abc\n"))
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if cfg2.Style == nil || cfg2.Style.UseTerminalColors {
+		t.Errorf("UseTerminalColors should default to false, got %+v", cfg2.Style)
+	}
+}

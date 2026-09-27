@@ -69,6 +69,7 @@ type Colors struct {
 }
 
 type Style struct {
+	UseTerminalColors       bool    `yaml:"use-terminal-colors"`
 	VolumeIndicatorWidth    int     `yaml:"volume-indicator-width"`
 	VolumeIndicatorAutohide int     `yaml:"volume-indicator-autohide-at"`
 	SidePanelWidth          int     `yaml:"side-panel-width"`
@@ -189,6 +190,7 @@ var defaultConfig = Config{
 		PlayerHide:               NewKey("ctrl+p"),
 	},
 	Style: &Style{
+		UseTerminalColors:       false,
 		VolumeIndicatorWidth:    16,
 		VolumeIndicatorAutohide: 58,
 		SidePanelWidth:          32,

@@ -1,0 +1,135 @@
+package style
+
+import (
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/lillink13/yamusic-tui/config"
+	"github.com/lucasb-eyer/go-colorful"
+)
+
+func TestIsHexColor(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"#FC0", true},
+		{"#F33", true},
+		{"#4a3c00", true},
+		{"accent", false},
+		{"", false},
+		{"#xxxx", false},
+	}
+	for _, tt := range tests {
+		if got := isHexColor(tt.in); got != tt.want {
+			t.Errorf("isHexColor(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestResolvePaletteDisabledNoTerminal(t *testing.T) {
+	// Flag off: palette must stay empty, raw values are used verbatim.
+	style := &config.Style{
+		UseTerminalColors: false,
+		Colors: &config.Colors{
+			Accent: "#ABC",
+		},
+	}
+	pal := resolvePalette(style)
+	if pal.resolve("accent", "#ABC") != lipgloss.Color("#ABC") {
+		t.Errorf("flag off should keep raw #ABC")
+	}
+}
+
+func darkTerminal() terminalColors {
+	return terminalColors{
+		fg:    colorful.Color{R: 0.9, G: 0.9, B: 0.9},
+		bg:    colorful.Color{R: 0.05, G: 0.05, B: 0.05},
+		dark:  true,
+		hasFG: true,
+		hasBG: true,
+	}
+}
+
+// lightness returns the L component (index 2) of a color's HSL triple.
+func lightness(c *colorful.Color) float64 {
+	_, _, l := c.Hsl()
+	return l
+}
+
+func TestBuildPaletteDarkBackground(t *testing.T) {
+	pal := buildPalette(darkTerminal())
+
+	if pal.normalText == nil || pal.background == nil {
+		t.Fatalf("palette should fill fg/bg colors")
+	}
+	// Normal text on dark bg should be light.
+	if l := lightness(pal.normalText); l < 0.5 {
+		t.Errorf("normal text lightness = %v, want light on dark background", l)
+	}
+	if l := lightness(pal.background); l > 0.5 {
+		t.Errorf("background lightness = %v, want dark", l)
+	}
+	// Accent should be present and reasonably saturated.
+	if pal.accent == nil {
+		t.Fatal("accent should be set")
+	}
+	_, s, _ := pal.accent.Hsl()
+	if s < 0.5 {
+		t.Errorf("accent saturation = %v, want a colorful accent", s)
+	}
+	// Inactive text should be dimmer than active text.
+	if al := lightness(pal.activeText); al < 0.5 {
+		t.Errorf("active lightness = %v, want bright", al)
+	}
+	if il := lightness(pal.inactiveText); il >= lightness(pal.activeText) {
+		t.Errorf("inactive lightness = %v, want dimmer than active", il)
+	}
+	// Lyrics current should be brighter than the (muted) previous line.
+	if lightness(pal.lyricsCurrent) <= lightness(pal.lyricsPrevious) {
+		t.Errorf("lyrics current should be brighter than previous")
+	}
+}
+
+func TestBuildPaletteLightBackground(t *testing.T) {
+	// Simulate a light terminal: white-ish background, dark text.
+	tc := terminalColors{
+		fg:    colorful.Color{R: 0.1, G: 0.1, B: 0.1},
+		bg:    colorful.Color{R: 0.95, G: 0.95, B: 0.95},
+		dark:  false,
+		hasFG: true,
+		hasBG: true,
+	}
+	pal := buildPalette(tc)
+
+	if pal.normalText == nil || pal.background == nil {
+		t.Fatalf("palette should fill fg/bg colors")
+	}
+	if l := lightness(pal.normalText); l > 0.5 {
+		t.Errorf("normal text lightness = %v, want dark on light background", l)
+	}
+	if l := lightness(pal.background); l < 0.5 {
+		t.Errorf("background lightness = %v, want light", l)
+	}
+}
+
+func TestResolveWithTerminalPalette(t *testing.T) {
+	pal := buildPalette(darkTerminal())
+
+	if got := pal.resolve("accent", "#FC0"); got != lipgloss.Color("#FC0") {
+		t.Errorf("explicit hex accent should be used verbatim, got %v", got)
+	}
+	if got := pal.resolve("accent", ""); got == lipgloss.Color("") {
+		t.Errorf("empty accent should be resolved from terminal palette, got %v", got)
+	}
+	if got := pal.resolve("unknown", "#ABC"); got != lipgloss.Color("#ABC") {
+		t.Errorf("unknown key should fall back to raw #ABC, got %v", got)
+	}
+}
+
+func TestResolveExplicitHexOverridesPalette(t *testing.T) {
+	pal := buildPalette(darkTerminal())
+	if got := pal.resolve("background", "#112233"); got != lipgloss.Color("#112233") {
+		t.Errorf("explicit hex background should override palette, got %v", got)
+	}
+}
