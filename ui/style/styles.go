@@ -91,20 +91,22 @@ func Apply(style *config.Style) {
 	SidePanelAutohide = style.SidePanelAutohide
 	SearchModalWidth = style.SearchModalWidth
 
-	AccentColor = lipgloss.Color(style.Colors.Accent)
-	ErrorColor = lipgloss.Color(style.Colors.Error)
-	BorderColor = lipgloss.Color(style.Colors.Border)
-	BackgroundColor = lipgloss.Color(style.Colors.Background)
-	PlaylistSelectionColor = lipgloss.Color(style.Colors.PlaylistSelection)
-	ActiveTextColor = lipgloss.Color(style.Colors.ActiveText)
-	NormalTextColor = lipgloss.Color(style.Colors.NormalText)
-	InactiveTextColor = lipgloss.Color(style.Colors.InactiveText)
-	TrackTitleTextColor = lipgloss.Color(style.Colors.TrackTitleText)
-	TrackVersionTextColor = lipgloss.Color(style.Colors.TrackVersionText)
-	TrackArtistTextColor = lipgloss.Color(style.Colors.TrackArtistText)
-	LyricsPreviosTextColor = lipgloss.Color(style.Colors.LyricsPrevious)
-	LyricsCurrentTextColor = lipgloss.Color(style.Colors.LyricsCurrent)
-	LyricsNextTextColor = lipgloss.Color(style.Colors.LyricsNext)
+	pal := resolvePalette(style)
+
+	AccentColor = pal.resolve("accent", style.Colors.Accent)
+	ErrorColor = pal.resolve("error", style.Colors.Error)
+	BorderColor = pal.resolve("border", style.Colors.Border)
+	BackgroundColor = pal.resolve("background", style.Colors.Background)
+	PlaylistSelectionColor = pal.resolve("playlist-selection", style.Colors.PlaylistSelection)
+	ActiveTextColor = pal.resolve("active-text", style.Colors.ActiveText)
+	NormalTextColor = pal.resolve("normal-text", style.Colors.NormalText)
+	InactiveTextColor = pal.resolve("inactive-text", style.Colors.InactiveText)
+	TrackTitleTextColor = pal.resolve("track-title-text", style.Colors.TrackTitleText)
+	TrackVersionTextColor = pal.resolve("track-version-text", style.Colors.TrackVersionText)
+	TrackArtistTextColor = pal.resolve("track-artist-text", style.Colors.TrackArtistText)
+	LyricsPreviosTextColor = pal.resolve("lyrics-previous", style.Colors.LyricsPrevious)
+	LyricsCurrentTextColor = pal.resolve("lyrics-current", style.Colors.LyricsCurrent)
+	LyricsNextTextColor = pal.resolve("lyrics-next", style.Colors.LyricsNext)
 
 	IconPlay = style.Icons.Play
 	IconStop = style.Icons.Stop
